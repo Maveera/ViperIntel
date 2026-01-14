@@ -18,33 +18,26 @@ for engine in engines:
 if 'scan_results' not in st.session_state:
     st.session_state.scan_results = None
 
-# --- UI Styling & Neon Design ---
+# --- UI Styling & Design ---
 st.markdown("""
     <style>
     .stApp { background-color: #0a0e14; color: #e0e6ed; }
     .author-text { color: #00ffcc; font-weight: bold; font-size: 18px; }
     footer { visibility: hidden; }
     
-    /* Neon EXECUTE Button Design */
+    /* Neon EXECUTE Button */
     div.stButton > button:first-child {
-        background: transparent !important;
-        color: #00ffcc !important;
-        border: 2px solid #00ffcc !important;
+        background: #00ffcc !important;
+        color: #0a0e14 !important;
         font-weight: bold !important;
         width: 100% !important;
         height: 3.8em !important;
         border-radius: 12px !important;
-        transition: all 0.3s ease;
         text-transform: uppercase;
         letter-spacing: 2px;
     }
-    div.stButton > button:first-child:hover {
-        background: #00ffcc !important;
-        color: #0a0e14 !important;
-        box-shadow: 0px 0px 20px #00ffcc;
-    }
 
-    /* Top-Right Reset Button */
+    /* Reset Button */
     .stButton > button[kind="secondary"] {
         background-color: transparent !important;
         color: #ff4b4b !important;
@@ -65,7 +58,7 @@ st.markdown("""
 col_title, col_reset = st.columns([5, 1])
 with col_title:
     st.title("🐍 ViperIntel Pro")
-    st.markdown("#### Universal Threat Intelligence Aggregator")
+    st.markdown("#### Universal Threat Intelligence & Forensic Aggregator")
 
 with col_reset:
     st.write(" ")
@@ -82,16 +75,15 @@ with st.sidebar:
 
     def api_input(label, session_key):
         if not st.session_state[f"{session_key}_locked"]:
-            # Logic: If user types and hits enter, it freezes
             val = st.text_input(label, type="password", key=f"inp_{session_key}")
             if val:
                 st.session_state[f"{session_key}_key"] = val
                 st.session_state[f"{session_key}_locked"] = True
                 st.rerun()
         else:
-            col1, col2 = st.columns([4, 1])
-            col1.info(f"✅ {label} Locked")
-            if col2.button("✏️", key=f"edit_{session_key}"):
+            col_status, col_edit = st.columns([4, 1])
+            col_status.success(f"✅ {session_key} Locked")
+            if col_edit.button("✏️", key=f"edit_{session_key}"):
                 st.session_state[f"{session_key}_locked"] = False
                 st.rerun()
 
@@ -107,46 +99,72 @@ with st.sidebar:
 uploaded_file = st.file_uploader("Upload CSV (IPs in first column)", type=["csv"])
 
 if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
-    active_keys = [st.session_state[f"{e}_key"] for e in engines]
-    if not any(active_keys):
-        st.error("❌ Please enter and hit 'Enter' on at least one API key in the sidebar.")
+    if not any([st.session_state[f"{e}_key"] for e in engines]):
+        st.error("❌ Please configure at least one API key in the sidebar.")
     else:
-        df_input = pd.read_csv(uploaded_file)
-        # Fix: Direct list processing ensuring 5 IPs result in 5 scans
-        ips = df_input.iloc[:, 0].dropna().tolist()
+        df_input = pd.read_csv(uploaded_file, header=None) 
+        ips = df_input.iloc[:, 0].astype(str).str.strip().tolist()
         
         results = []
         progress = st.progress(0)
         status = st.empty()
 
         for i, ip in enumerate(ips):
-            status.markdown(f"🔍 **Analyzing:** `{ip}` ({i+1}/{len(ips)})")
-            intel = {"IP": ip, "Status": "Clean", "Country": "Unknown", "Lat": 20.0, "Lon": 0.0}
+            clean_ip = ip.replace('"', '').replace("'", "")
+            status.markdown(f"🔍 **Analyzing:** `{clean_ip}` ({i+1}/{len(ips)})")
+            
+            intel = {
+                "IP": clean_ip, "Status": "Clean", "Country": "Unknown", "City": "Unknown",
+                "ASN Owner": "Unknown", "Network": "N/A", "Abuse Score": 0, "VT Hits": 0,
+                "OTX Pulses": 0, "Proxy/VPN": "No", "Domain Names": "N/A", "Last Analysis": "N/A",
+                "Lat": 20.0, "Lon": 0.0
+            }
 
-            # 1. AbuseIPDB Engine
+            # 1. AbuseIPDB (Abuse Reports, Domain, ISP)
             if st.session_state["AbuseIPDB_key"]:
                 try:
                     r = requests.get("https://api.abuseipdb.com/api/v2/check", 
                                      headers={"Key": st.session_state["AbuseIPDB_key"], "Accept":"application/json"},
-                                     params={"ipAddress": ip}).json()
-                    intel["Abuse Score"] = r['data'].get('abuseConfidenceScore', 0)
-                    intel["Lat"], intel["Lon"] = r['data'].get('latitude'), r['data'].get('longitude')
-                    intel["Country"] = r['data'].get('countryName', 'Unknown')
-                    intel["Domain"] = r['data'].get('domain', 'N/A')
-                except: intel["Abuse Score"] = 0
+                                     params={"ipAddress": clean_ip}).json()
+                    data = r.get('data', {})
+                    intel["Abuse Score"] = data.get('abuseConfidenceScore', 0)
+                    intel["ASN Owner"] = data.get('isp', 'Unknown')
+                    intel["Domain Names"] = data.get('domain', 'N/A')
+                    intel["Country"] = data.get('countryName', 'Unknown')
+                    intel["Lat"], intel["Lon"] = data.get('latitude'), data.get('longitude')
+                except: pass
 
-            # 2. VirusTotal Engine
+            # 2. VirusTotal (AS Number, Reputation, Last Analysis)
             if st.session_state["VirusTotal_key"]:
                 try:
-                    r = requests.get(f"https://www.virustotal.com/api/v3/ip_addresses/{ip}", 
+                    r = requests.get(f"https://www.virustotal.com/api/v3/ip_addresses/{clean_ip}", 
                                      headers={"x-apikey": st.session_state["VirusTotal_key"]}).json()
-                    stats = r['data']['attributes']['last_analysis_stats']
-                    intel["VT Hits"] = stats.get('malicious', 0)
-                    if intel["VT Hits"] > 0: intel["Status"] = "🚨 Malicious"
-                except: intel["VT Hits"] = 0
+                    attr = r['data']['attributes']
+                    intel["VT Hits"] = attr['last_analysis_stats'].get('malicious', 0)
+                    intel["Network"] = attr.get('network', 'N/A')
+                    last_ts = attr.get('last_analysis_date', 0)
+                    intel["Last Analysis"] = time.strftime('%Y-%m-%d %H:%M', time.gmtime(last_ts)) if last_ts else "N/A"
+                except: pass
 
-            # Logic check
-            if intel.get("Abuse Score", 0) > 25: intel["Status"] = "🚨 Malicious"
+            # 3. AlienVault OTX (Threat Pulses & Indicators)
+            if st.session_state["AlienVault OTX_key"]:
+                try:
+                    r = requests.get(f"https://otx.alienvault.com/api/v1/indicators/IPv4/{clean_ip}/general", 
+                                     headers={"X-OTX-API-KEY": st.session_state["AlienVault OTX_key"]}).json()
+                    intel["OTX Pulses"] = r.get('pulse_info', {}).get('count', 0)
+                except: pass
+
+            # 4. IPQualityScore (Proxy/VPN/Bot detection)
+            if st.session_state["IPQualityScore_key"]:
+                try:
+                    r = requests.get(f"https://www.ipqualityscore.com/api/json/ip/{st.session_state['IPQualityScore_key']}/{clean_ip}").json()
+                    intel["Proxy/VPN"] = "Yes" if r.get('proxy') or r.get('vpn') else "No"
+                    intel["City"] = r.get('city', intel["City"])
+                except: pass
+
+            # Global Malicious Logic
+            if intel["Abuse Score"] > 25 or intel["VT Hits"] > 0 or intel["OTX Pulses"] > 5:
+                intel["Status"] = "🚨 Malicious"
             
             results.append(intel)
             progress.progress((i + 1) / len(ips))
@@ -155,21 +173,13 @@ if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
         st.session_state.scan_results = pd.DataFrame(results)
         status.empty()
 
-# --- Outputs & Reports ---
+# --- Outputs ---
 if st.session_state.scan_results is not None:
     res = st.session_state.scan_results
-    
-    # Fix: S.No starts from 1
     res.index = res.index + 1
     res.index.name = "S.No"
 
-    mal_count = len(res[res["Status"] == "🚨 Malicious"])
-    m1, m2, m3 = st.columns(3)
-    m1.markdown(f"<div class='metric-card'><b>Total IPs Scanned</b><br><h2 style='color:#00ffcc;'>{len(res)}</h2></div>", unsafe_allow_html=True)
-    m2.markdown(f"<div class='metric-card'><b>Malicious Detected</b><br><h2 style='color:#ff4b4b;'>{mal_count}</h2></div>", unsafe_allow_html=True)
-    m3.markdown(f"<div class='metric-card'><b>Safe Results</b><br><h2 style='color:#00ffcc;'>{len(res)-mal_count}</h2></div>", unsafe_allow_html=True)
-
-    # Geographic Threat Map
+    # Map
     st.subheader("🌐 Geographic Threat Origin")
     m = folium.Map(location=[20, 0], zoom_start=2, tiles="CartoDB dark_matter")
     for _, r in res.iterrows():
@@ -177,11 +187,9 @@ if st.session_state.scan_results is not None:
         folium.CircleMarker([r['Lat'], r['Lon']], radius=8, color=color, fill=True).add_to(m)
     st_folium(m, width=1200, height=500)
 
-    # Detailed Intelligence Report
-    st.subheader("📋 Detailed Intelligence Report")
+    # Table
+    st.subheader("📋 Forensic Intelligence Report")
     st.dataframe(res.drop(columns=['Lat', 'Lon']), use_container_width=True)
-    
-    csv = res.to_csv(index=True).encode('utf-8')
-    st.download_button("📥 DOWNLOAD CSV", data=csv, file_name="ViperIntel_Report.csv", mime="text/csv")
+    st.download_button("📥 DOWNLOAD CSV", data=res.to_csv(index=True).encode('utf-8'), file_name="ViperIntel_Report.csv", mime="text/csv")
 
 st.markdown(f"""<div class="custom-footer">© 2026 ViperIntel Pro | Developed by <a href="https://maveera.tech" target="_blank" style="color:#00ffcc; text-decoration:none;">Maveera</a></div>""", unsafe_allow_html=True)
