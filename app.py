@@ -322,7 +322,7 @@ st.markdown(
     </style>
 
     <div class="viper-footer">
-        © 2026 <b>ViperIntel Pro</b> · Developed by <a href="http://maveera.tech">Maveera</a>
+     <center> © 2026 <b>ViperIntel Pro</b> · Developed by <a href="http://maveera.tech">Maveera</a></center>
     </div>
     """,
     unsafe_allow_html=True
