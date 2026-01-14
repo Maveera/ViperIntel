@@ -9,7 +9,6 @@ from streamlit_folium import st_folium
 st.set_page_config(page_title="ViperIntel Pro | By Maveera", page_icon="🛡️", layout="wide")
 
 # --- Session State Management ---
-# Expanded global engines list for a complete TI profile
 engines = ["AbuseIPDB", "VirusTotal", "AlienVault OTX", "IPQualityScore", "ThreatFox", "Shodan", "GreyNoise", "CriminalIP"]
 for e in engines:
     if f"{e}_key" not in st.session_state: st.session_state[f"{e}_key"] = ""
@@ -23,7 +22,7 @@ st.markdown("""
     .author-text { color: #00ffcc; font-weight: bold; font-size: 18px; }
     footer { visibility: hidden; }
     
-    /* Neon EXECUTE Button Design */
+    /* Neon EXECUTE Button */
     div.stButton > button:first-child {
         background-color: #00ffcc !important;
         color: #0a0e14 !important;
@@ -35,27 +34,19 @@ st.markdown("""
         box-shadow: 0px 0px 15px #00ffcc;
     }
 
-    /* Professional Reset Button */
-    .stButton > button[kind="secondary"] {
-        background-color: transparent !important;
-        color: #ff4b4b !important;
-        border: 1px solid #ff4b4b !important;
-        border-radius: 6px !important;
-    }
-
-    /* Live Key Freeze Container */
-    .key-freeze-container {
+    /* Fixed Live Key Freeze Row */
+    .key-freeze-row {
         background-color: rgba(255, 255, 255, 0.05);
         border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 12px;
-        padding: 10px 15px;
+        padding: 8px 12px;
         display: flex;
         justify-content: space-between;
         align-items: center;
-        margin-bottom: 10px;
+        margin-bottom: 12px;
+        width: 100%;
     }
-    .masked-dots { color: #8b949e; font-size: 20px; letter-spacing: 3px; line-height: 1; }
-    .edit-link { color: #58a6ff; font-weight: bold; cursor: pointer; text-decoration: none; font-size: 14px; }
+    .dots-mask { color: #8b949e; font-size: 18px; letter-spacing: 2px; line-height: 1; }
     
     .metric-card { background: #161b22; padding: 20px; border-radius: 10px; border: 1px solid #1f2937; text-align: center; }
     </style>
@@ -68,7 +59,7 @@ with col_title:
     st.markdown("#### Universal Threat Intelligence & Forensic Aggregator")
 
 with col_reset:
-    st.write("") # Spacer
+    st.write("") 
     if st.button("🔄 Reset Console", type="secondary"):
         st.session_state.scan_results = None
         st.rerun()
@@ -80,33 +71,29 @@ with st.sidebar:
     st.divider()
     st.subheader("🔑 Global API Configuration")
 
-    # API Input Function with Live Key Freeze Logic
     def api_input(label, session_key):
         if not st.session_state[f"{session_key}_locked"]:
-            # Standard input field
             val = st.text_input(label, type="password", key=f"inp_{session_key}")
-            if val: # Triggered on hitting 'Enter'
+            if val:
                 st.session_state[f"{session_key}_key"] = val
                 st.session_state[f"{session_key}_locked"] = True
                 st.rerun()
         else:
-            # Locked state display
+            # Layout Fix: Forced Single Line
             st.markdown(f"**{label}**")
-            st.markdown(f"""
-                <div class="key-freeze-container">
-                    <span class="masked-dots">••••••••••••••••••••••••••••••</span>
-                </div>
-            """, unsafe_allow_html=True)
-            # Small inline button to trigger edit
-            if st.button("Edit", key=f"btn_edit_{session_key}", help="Unlock API Key"):
-                st.session_state[f"{session_key}_locked"] = False
-                st.rerun()
+            # We use columns within the sidebar to force the button to the far right on the same line
+            col_dots, col_edit = st.columns([4, 1.2])
+            with col_dots:
+                st.markdown("""<div style="background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:8px; color:#8b949e; letter-spacing:2px;">••••••••••••••••</div>""", unsafe_allow_html=True)
+            with col_edit:
+                if st.button("Edit", key=f"btn_{session_key}"):
+                    st.session_state[f"{session_key}_locked"] = False
+                    st.rerun()
 
-    # Show top 3 by default
+    # Show primary 3
     for engine in engines[:3]:
         api_input(f"{engine} Key", engine)
     
-    # Hide others in search dropdown
     with st.expander("🔍 Search More Engines"):
         search_engine = st.selectbox("Select Provider", [""] + engines[3:])
         if search_engine:
@@ -137,12 +124,10 @@ if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
             "Last Analysis": "Never", "Abuse Score": 0, "VT Hits": 0, "Lat": 20.0, "Lon": 0.0
         }
 
-        # AbuseIPDB API
+        # 1. AbuseIPDB
         if st.session_state["AbuseIPDB_key"]:
             try:
-                r = requests.get("https://api.abuseipdb.com/api/v2/check", 
-                                 headers={"Key": st.session_state["AbuseIPDB_key"], "Accept":"application/json"},
-                                 params={"ipAddress": ip}).json()
+                r = requests.get("https://api.abuseipdb.com/api/v2/check", headers={"Key": st.session_state["AbuseIPDB_key"], "Accept":"application/json"}, params={"ipAddress": ip}).json()
                 data = r.get('data', {})
                 intel["Abuse Score"] = data.get('abuseConfidenceScore', 0)
                 intel["ISP"] = data.get('isp', 'Unknown')
@@ -150,17 +135,15 @@ if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
                 intel["Lat"], intel["Lon"] = data.get('latitude'), data.get('longitude')
             except: pass
 
-        # VirusTotal API
+        # 2. VirusTotal
         if st.session_state["VirusTotal_key"]:
             try:
-                r = requests.get(f"https://www.virustotal.com/api/v3/ip_addresses/{ip}", 
-                                 headers={"x-apikey": st.session_state["VirusTotal_key"]}).json()
+                r = requests.get(f"https://www.virustotal.com/api/v3/ip_addresses/{ip}", headers={"x-apikey": st.session_state["VirusTotal_key"]}).json()
                 attr = r['data']['attributes']
                 intel["VT Hits"] = attr['last_analysis_stats'].get('malicious', 0)
                 intel["ASN"] = f"AS {attr.get('asn', 'N/A')}"
                 intel["Network"] = attr.get('network', 'N/A')
                 intel["Reputation"] = attr.get('reputation', 0)
-                
                 last_ts = attr.get('last_analysis_date', 0)
                 intel["Last Analysis"] = time.strftime('%Y-%m-%d %H:%M', time.gmtime(last_ts)) if last_ts else "Never"
             except: pass
@@ -178,16 +161,14 @@ if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
 # --- Display Results ---
 if st.session_state.scan_results is not None:
     res = st.session_state.scan_results
-    res.index = res.index + 1 # S.No starting from 1
+    res.index = res.index + 1
     res.index.name = "S.No"
 
-    # Metrics
     m1, m2, m3 = st.columns(3)
     m1.markdown(f"<div class='metric-card'><b>Total IPs</b><br><h2>{len(res)}</h2></div>", unsafe_allow_html=True)
     m2.markdown(f"<div class='metric-card'><b>Malicious</b><br><h2 style='color:#ff4b4b;'>{len(res[res['Status'] != 'Clean'])}</h2></div>", unsafe_allow_html=True)
     m3.markdown(f"<div class='metric-card'><b>Clean</b><br><h2>{len(res[res['Status'] == 'Clean'])}</h2></div>", unsafe_allow_html=True)
 
-    # Geographic Threat Map
     st.subheader("🌐 Geographic Threat Origin")
     m = folium.Map(location=[20, 0], zoom_start=2, tiles="CartoDB dark_matter")
     for _, r in res.iterrows():
@@ -195,8 +176,7 @@ if st.session_state.scan_results is not None:
         folium.CircleMarker([r['Lat'], r['Lon']], radius=8, color=color, fill=True).add_to(m)
     st_folium(m, width=1200, height=500)
 
-    # Intelligence Table
-    st.subheader("📋 Forensic Intelligence Report")
+    st.subheader("📋 Detailed Intelligence Report")
     st.dataframe(res.drop(columns=['Lat', 'Lon']), use_container_width=True)
     st.download_button("📥 DOWNLOAD CSV", data=res.to_csv(index=True).encode('utf-8'), file_name="ViperIntel_Report.csv", mime="text/csv")
 
