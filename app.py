@@ -1,10 +1,9 @@
 import streamlit as st
 import requests
 import pandas as pd
-import time
 import json, os
 from datetime import datetime
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 
 # ================= FILES =================
 CONFIG_FILE = "config.json"
@@ -23,8 +22,11 @@ FERNET = Fernet(load_or_create_key())
 def encrypt(val: str) -> str:
     return FERNET.encrypt(val.encode()).decode()
 
-def decrypt(val: str) -> str:
-    return FERNET.decrypt(val.encode()).decode()
+def decrypt_safe(val: str):
+    try:
+        return FERNET.decrypt(val.encode()).decode()
+    except InvalidToken:
+        return None  # graceful failure
 
 # ================= AUDIT =================
 def audit(action):
@@ -51,11 +53,27 @@ DEFAULT_CONFIG = {
 def load_config():
     if not os.path.exists(CONFIG_FILE):
         return DEFAULT_CONFIG.copy()
+
     with open(CONFIG_FILE, "r") as f:
         cfg = json.load(f)
-        for k, v in cfg.get("keys", {}).items():
-            cfg["keys"][k] = decrypt(v)
-        return cfg
+
+    clean_keys = {}
+    clean_locked = {}
+
+    for ti, enc_val in cfg.get("keys", {}).items():
+        dec = decrypt_safe(enc_val)
+        if dec is None:
+            audit(f"Invalid encryption token detected for {ti} – key reset")
+            clean_keys[ti] = ""
+            clean_locked[ti] = False
+        else:
+            clean_keys[ti] = dec
+            clean_locked[ti] = cfg.get("locked", {}).get(ti, False)
+
+    cfg["keys"] = clean_keys
+    cfg["locked"] = clean_locked
+
+    return cfg
 
 def save_config():
     cfg = {
@@ -77,12 +95,12 @@ def save_config():
 # ================= INIT =================
 config = load_config()
 
-st.session_state.setdefault("active_ti", config["active_ti"])
-st.session_state.setdefault("inactive_ti", config["inactive_ti"])
+st.session_state.setdefault("active_ti", config.get("active_ti", DEFAULT_CONFIG["active_ti"]))
+st.session_state.setdefault("inactive_ti", config.get("inactive_ti", DEFAULT_CONFIG["inactive_ti"]))
 
 for ti in ALL_TI_ENGINES:
-    st.session_state.setdefault(f"{ti}_key", config["keys"].get(ti, ""))
-    st.session_state.setdefault(f"{ti}_locked", config["locked"].get(ti, False))
+    st.session_state.setdefault(f"{ti}_key", config.get("keys", {}).get(ti, ""))
+    st.session_state.setdefault(f"{ti}_locked", config.get("locked", {}).get(ti, False))
 
 st.session_state.setdefault("scan_results", None)
 st.session_state.setdefault("uploaded_file", None)
@@ -104,7 +122,7 @@ with st.sidebar:
             if val:
                 st.session_state[f"{ti}_key"] = val
                 st.session_state[f"{ti}_locked"] = True
-                audit(f"{ti} key updated")
+                audit(f"{ti} key set/updated")
                 save_config()
                 st.rerun()
         else:
@@ -137,7 +155,6 @@ with st.sidebar:
             save_config()
             st.rerun()
 
-    # 🔹 DATA RESET ONLY
     st.divider()
     if st.button("🧹 Clear Scan Data"):
         st.session_state.scan_results = None
