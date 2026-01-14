@@ -1,11 +1,12 @@
 import streamlit as st
 import requests
 import pandas as pd
-import json, os, time
+import json, os, time, uuid
 from datetime import datetime
 from cryptography.fernet import Fernet, InvalidToken
 from pandas.errors import EmptyDataError
 import ipaddress
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ==================================================
 # FILES
@@ -42,27 +43,53 @@ def audit(action):
         f.write(f"{datetime.utcnow().isoformat()}Z | {action}\n")
 
 # ==================================================
-# MITRE ATT&CK (RULE-BASED, HONEST)
+# MITRE ATT&CK MAP (EXTENDED)
 # ==================================================
 MITRE_MAP = {
-    "AbuseIPDB": "T1046 – Network Service Scanning",
-    "VirusTotal": "T1105 – Ingress Tool Transfer"
+    "AbuseIPDB": {
+        "technique": "T1046",
+        "technique_name": "Network Service Scanning",
+        "tactic": "TA0043",
+        "tactic_name": "Reconnaissance"
+    },
+    "VirusTotal": {
+        "technique": "T1105",
+        "technique_name": "Ingress Tool Transfer",
+        "tactic": "TA0011",
+        "tactic_name": "Command and Control"
+    }
 }
 
 # ==================================================
-# THREAT INTELLIGENCE SOURCES
+# TI CONFIG
 # ==================================================
-ALL_TI_ENGINES = [
-    "AbuseIPDB","VirusTotal","AlienVault OTX","GreyNoise","Spamhaus",
-    "IPQualityScore","Recorded Future","Cisco Talos","IBM X-Force",
-    "CrowdStrike Falcon","Microsoft Defender Threat Intelligence"
-]
-
+ALL_TI_ENGINES = ["AbuseIPDB", "VirusTotal"]
 SUPPORTED_TI = ["AbuseIPDB", "VirusTotal"]
-DEFAULT_ACTIVE = ["AbuseIPDB", "VirusTotal", "AlienVault OTX"]
+DEFAULT_ACTIVE = ["AbuseIPDB", "VirusTotal"]
+
+MAX_RPS = 4
 
 # ==================================================
-# CONFIG HANDLING
+# IP HELPERS
+# ==================================================
+def is_public_ip(ip):
+    obj = ipaddress.ip_address(ip)
+    return not (
+        obj.is_private or obj.is_loopback or obj.is_multicast
+        or obj.is_reserved or obj.is_link_local
+    )
+
+def expand_ip(value, max_expand=512):
+    try:
+        if "/" in value:
+            net = ipaddress.ip_network(value, strict=False)
+            return [str(ip) for ip in list(net.hosts())[:max_expand]]
+        return [str(ipaddress.ip_address(value))]
+    except:
+        return []
+
+# ==================================================
+# CONFIG
 # ==================================================
 def load_config():
     if not os.path.exists(CONFIG_FILE):
@@ -74,16 +101,11 @@ def load_config():
     clean_keys, clean_locked = {}, {}
     for ti, enc in cfg.get("keys", {}).items():
         dec = decrypt_safe(enc)
-        if dec is None:
-            audit(f"Invalid token for {ti} – key reset")
-            clean_keys[ti] = ""
-            clean_locked[ti] = False
-        else:
-            clean_keys[ti] = dec
-            clean_locked[ti] = cfg.get("locked", {}).get(ti, False)
+        clean_keys[ti] = dec if dec else ""
+        clean_locked[ti] = cfg.get("locked", {}).get(ti, False)
 
     return {
-        "active_ti": [ti for ti in cfg.get("active_ti", DEFAULT_ACTIVE) if ti in ALL_TI_ENGINES],
+        "active_ti": cfg.get("active_ti", DEFAULT_ACTIVE),
         "keys": clean_keys,
         "locked": clean_locked
     }
@@ -102,37 +124,17 @@ def save_config():
         json.dump(cfg, f, indent=2)
 
 # ==================================================
-# IP HELPERS
-# ==================================================
-def is_public_ip(ip):
-    obj = ipaddress.ip_address(ip)
-    return not (
-        obj.is_private or obj.is_loopback or obj.is_multicast
-        or obj.is_reserved or obj.is_link_local
-    )
-
-def expand_ip(value, max_expand=1024):
-    try:
-        if "/" in value:
-            net = ipaddress.ip_network(value, strict=False)
-            return [str(ip) for ip in list(net.hosts())[:max_expand]]
-        return [str(ipaddress.ip_address(value))]
-    except:
-        return []
-
-# ==================================================
-# INIT SESSION
+# INIT
 # ==================================================
 config = load_config()
 
 st.session_state.setdefault("active_ti", config["active_ti"])
-st.session_state["inactive_ti"] = sorted(list(set(ALL_TI_ENGINES) - set(st.session_state.active_ti)))
-
 for ti in ALL_TI_ENGINES:
     st.session_state.setdefault(f"{ti}_key", config["keys"].get(ti, ""))
     st.session_state.setdefault(f"{ti}_locked", config["locked"].get(ti, False))
 
 st.session_state.setdefault("scan_results", None)
+st.session_state.setdefault("mitre_stats", {})
 st.session_state.setdefault("uploaded_file", None)
 
 # ==================================================
@@ -143,63 +145,31 @@ st.title("🛡️ ViperIntel Pro")
 st.markdown("### Universal Threat Intelligence & Forensic Aggregator")
 
 # ==================================================
-# SIDEBAR (FIXED & RESTORED)
+# SIDEBAR
 # ==================================================
 with st.sidebar:
     st.subheader("🔑 Global API Configuration")
 
-    def ti_block(ti):
+    for ti in ALL_TI_ENGINES:
         st.markdown(f"**{ti}**")
-
         if not st.session_state[f"{ti}_locked"]:
-            val = st.text_input("", type="password", key=f"inp_{ti}", placeholder=f"Enter {ti} API Key")
+            val = st.text_input("", type="password", key=f"inp_{ti}")
             if val:
                 st.session_state[f"{ti}_key"] = val
                 st.session_state[f"{ti}_locked"] = True
-                audit(f"{ti} key updated")
                 save_config()
                 st.rerun()
         else:
-            st.markdown("••••••••••••••••")
+            st.markdown("••••••••••••••")
             if st.button("Edit", key=f"edit_{ti}"):
                 st.session_state[f"{ti}_locked"] = False
                 save_config()
                 st.rerun()
 
-        if st.button("Remove", key=f"remove_{ti}"):
-            st.session_state.active_ti.remove(ti)
-            audit(f"{ti} removed from active")
-            save_config()
-            st.rerun()
-
-    for ti in st.session_state.active_ti:
-        ti_block(ti)
-
-    st.divider()
-    add_ti = st.selectbox("➕ Add Threat Intelligence Source", ["Select TI"] + st.session_state.inactive_ti)
-    if add_ti != "Select TI":
-        st.session_state.active_ti.append(add_ti)
-        audit(f"{add_ti} added to active")
-        save_config()
-        st.rerun()
-
-    st.divider()
-    st.markdown(
-        """
-        <a href="https://www.buymeacoffee.com/maveera" target="_blank"
-        style="display:block;text-align:center;
-        background:#FFDD00;color:#000;
-        padding:10px;border-radius:8px;
-        font-weight:bold;text-decoration:none;">
-        ☕ Buy Me a Coffee
-        </a>
-        """,
-        unsafe_allow_html=True
-    )
-
     st.divider()
     if st.button("🧹 Clear Scan Data"):
         st.session_state.scan_results = None
+        st.session_state.mitre_stats = {}
         st.session_state.uploaded_file = None
         audit("Scan data cleared")
         st.rerun()
@@ -207,98 +177,112 @@ with st.sidebar:
 # ==================================================
 # FILE UPLOAD
 # ==================================================
-uploaded = st.file_uploader("Upload CSV / TXT (IPs, CIDRs, mixed)", type=["csv", "txt"])
+uploaded = st.file_uploader("Upload CSV / TXT (IPs or CIDRs)", type=["csv", "txt"])
 if uploaded:
     st.session_state.uploaded_file = uploaded
 
 # ==================================================
-# SCAN ENGINE
+# ASYNC SCAN WORKER
+# ==================================================
+def scan_ip(ip):
+    intel = {
+        "IP": ip,
+        "Abuse Score": 0,
+        "VT Hits": 0,
+        "Risk Score": 0,
+        "Confidence": "Low",
+        "MITRE Technique": "",
+        "MITRE Tactic": "",
+        "Status": "Clean"
+    }
+
+    if st.session_state["AbuseIPDB_key"]:
+        try:
+            r = requests.get(
+                "https://api.abuseipdb.com/api/v2/check",
+                headers={"Key": st.session_state["AbuseIPDB_key"], "Accept": "application/json"},
+                params={"ipAddress": ip},
+                timeout=10
+            ).json()
+            intel["Abuse Score"] = r.get("data", {}).get("abuseConfidenceScore", 0)
+            if intel["Abuse Score"] > 0:
+                intel["MITRE Technique"] = MITRE_MAP["AbuseIPDB"]["technique"]
+                intel["MITRE Tactic"] = MITRE_MAP["AbuseIPDB"]["tactic"]
+        except:
+            pass
+
+    if st.session_state["VirusTotal_key"]:
+        try:
+            r = requests.get(
+                f"https://www.virustotal.com/api/v3/ip_addresses/{ip}",
+                headers={"x-apikey": st.session_state["VirusTotal_key"]},
+                timeout=10
+            ).json()
+            intel["VT Hits"] = r["data"]["attributes"]["last_analysis_stats"].get("malicious", 0)
+            if intel["VT Hits"] > 0:
+                intel["MITRE Technique"] = MITRE_MAP["VirusTotal"]["technique"]
+                intel["MITRE Tactic"] = MITRE_MAP["VirusTotal"]["tactic"]
+        except:
+            pass
+
+    intel["Risk Score"] = min(100, int(intel["Abuse Score"] * 0.6 + intel["VT Hits"] * 10))
+
+    # ✅ Confidence Bands (NEW)
+    if intel["Risk Score"] >= 70:
+        intel["Confidence"] = "High"
+    elif intel["Risk Score"] >= 30:
+        intel["Confidence"] = "Medium"
+
+    if intel["Risk Score"] >= 40:
+        intel["Status"] = "🚨 Malicious"
+
+    return intel
+
+# ==================================================
+# SCAN
 # ==================================================
 if st.button("⚡ EXECUTE DEEP SCAN"):
-    with st.spinner("🔍 Executing Deep Scan..."):
-        time.sleep(0.4)
+    if not st.session_state.uploaded_file:
+        st.error("Upload a file first.")
+        st.stop()
 
-        if not st.session_state.uploaded_file:
-            st.error("❌ Upload a file first.")
-            st.stop()
+    try:
+        df = pd.read_csv(st.session_state.uploaded_file, header=None)
+    except EmptyDataError:
+        st.error("Uploaded file is empty.")
+        st.stop()
 
-        try:
-            df = pd.read_csv(st.session_state.uploaded_file, header=None)
-        except EmptyDataError:
-            st.error("❌ Uploaded file is empty.")
-            st.stop()
+    raw_values = df.iloc[:, 0].astype(str).tolist()
 
-        # Column auto-detection
-        ip_values = None
-        for col in df.columns:
-            series = df[col].astype(str)
-            if series.str.contains(r"[0-9a-fA-F\.:/]").any():
-                ip_values = series.tolist()
-                break
+    expanded = []
+    for v in raw_values:
+        expanded.extend(expand_ip(v.strip()))
 
-        if not ip_values:
-            st.error("❌ No IP-like column detected.")
-            st.stop()
+    ips = sorted({ip for ip in expanded if is_public_ip(ip)})
 
-        # Expand, validate, filter
-        expanded = []
-        for v in ip_values:
-            expanded.extend(expand_ip(v.strip()))
+    if not ips:
+        st.error("No valid public IPs found.")
+        st.stop()
 
-        valid_ips = sorted({ip for ip in expanded if is_public_ip(ip)})
+    results = []
+    mitre_count = {}
 
-        if not valid_ips:
-            st.error("❌ No valid public IPs after filtering.")
-            st.stop()
+    with st.spinner("🔍 Scanning with rate limiting..."):
+        with ThreadPoolExecutor(max_workers=MAX_RPS) as executor:
+            futures = [executor.submit(scan_ip, ip) for ip in ips]
 
-        progress = st.progress(0)
-        results = []
+            for future in as_completed(futures):
+                intel = future.result()
+                results.append(intel)
 
-        for i, ip in enumerate(valid_ips):
-            progress.progress((i + 1) / len(valid_ips))
+                if intel["MITRE Technique"]:
+                    mitre_count[intel["MITRE Technique"]] = mitre_count.get(intel["MITRE Technique"], 0) + 1
 
-            intel = {
-                "IP": ip,
-                "Status": "Clean",
-                "Abuse Score": 0,
-                "VT Hits": 0,
-                "MITRE ATT&CK": ""
-            }
+                time.sleep(1 / MAX_RPS)
 
-            if st.session_state["AbuseIPDB_key"]:
-                try:
-                    r = requests.get(
-                        "https://api.abuseipdb.com/api/v2/check",
-                        headers={"Key": st.session_state["AbuseIPDB_key"], "Accept": "application/json"},
-                        params={"ipAddress": ip},
-                        timeout=10
-                    ).json()
-                    intel["Abuse Score"] = r.get("data", {}).get("abuseConfidenceScore", 0)
-                    if intel["Abuse Score"] > 0:
-                        intel["MITRE ATT&CK"] = MITRE_MAP["AbuseIPDB"]
-                except:
-                    pass
-
-            if st.session_state["VirusTotal_key"]:
-                try:
-                    r = requests.get(
-                        f"https://www.virustotal.com/api/v3/ip_addresses/{ip}",
-                        headers={"x-apikey": st.session_state["VirusTotal_key"]},
-                        timeout=10
-                    ).json()
-                    intel["VT Hits"] = r["data"]["attributes"]["last_analysis_stats"].get("malicious", 0)
-                    if intel["VT Hits"] > 0:
-                        intel["MITRE ATT&CK"] = MITRE_MAP["VirusTotal"]
-                except:
-                    pass
-
-            if intel["Abuse Score"] > 25 or intel["VT Hits"] > 0:
-                intel["Status"] = "🚨 Malicious"
-
-            results.append(intel)
-
-        st.session_state.scan_results = pd.DataFrame(results)
-        st.success("✅ Scan completed successfully.")
+    st.session_state.scan_results = pd.DataFrame(results)
+    st.session_state.mitre_stats = mitre_count
+    st.success("Scan completed.")
 
 # ==================================================
 # RESULTS
@@ -307,16 +291,29 @@ if st.session_state.scan_results is not None:
     st.subheader("📋 Intelligence Report")
     st.dataframe(st.session_state.scan_results, use_container_width=True)
 
-# ==================================================
-# FOOTER
-# ==================================================
-st.markdown(
-    """
-    <div style="position:fixed;bottom:0;width:100%;
-    background:rgba(2,6,23,0.95);color:#94a3b8;
-    text-align:center;padding:12px;border-top:1px solid #1f2937;">
-    © 2026 <b>ViperIntel Pro</b> | All Rights Reserved
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+    st.subheader("🔥 MITRE ATT&CK Heatmap")
+    heatmap_df = pd.DataFrame(
+        [{"Technique": k, "Count": v} for k, v in st.session_state.mitre_stats.items()]
+    )
+    st.dataframe(heatmap_df, use_container_width=True)
+
+    # ==================================================
+    # STIX EXPORT (UNCHANGED)
+    # ==================================================
+    stix_bundle = {
+        "type": "bundle",
+        "id": f"bundle--{uuid.uuid4()}",
+        "spec_version": "2.1",
+        "objects": []
+    }
+
+    for _, row in st.session_state.scan_results.iterrows():
+        stix_bundle["objects"].append({
+            "type": "indicator",
+            "spec_version": "2.1",
+            "id": f"indicator--{uuid.uuid4()}",
+            "created": datetime.utcnow().isoformat() + "Z",
+            "modified": datetime.utcnow().isoformat() + "Z",
+            "name": f"Malicious IP {row['IP']}",
+            "pattern": f"[ipv4-addr:value = '{row['IP']}']",
+            "confidence":
