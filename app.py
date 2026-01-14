@@ -1,10 +1,8 @@
 import streamlit as st
 import requests
 import pandas as pd
-import json, os, time, uuid
-from datetime import datetime
+import json, os, time
 from cryptography.fernet import Fernet, InvalidToken
-from pandas.errors import EmptyDataError
 import ipaddress
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -42,24 +40,18 @@ DEFAULT_ACTIVE = ["AbuseIPDB", "VirusTotal"]
 
 # ================= MITRE MAP =================
 MITRE_MAP = {
-    "AbuseIPDB": {
-        "technique": "T1046",
-        "tactic": "TA0043"   # Reconnaissance
-    },
-    "VirusTotal": {
-        "technique": "T1105",
-        "tactic": "TA0011"   # Command and Control
-    }
+    "AbuseIPDB": {"technique": "T1046", "tactic": "TA0043"},
+    "VirusTotal": {"technique": "T1105", "tactic": "TA0011"}
 }
 
 MAX_RPS = 4
 
-# ================= CONFIG HANDLING =================
+# ================= CONFIG =================
 def load_config():
     if not os.path.exists(CONFIG_FILE):
         return {"active": DEFAULT_ACTIVE.copy(), "keys": {}, "locked": {}}
 
-    with open(CONFIG_FILE, "r") as f:
+    with open(CONFIG_FILE) as f:
         cfg = json.load(f)
 
     keys, locked = {}, {}
@@ -88,10 +80,10 @@ def save_config():
             }
         }, f, indent=2)
 
-# ================= INIT SESSION =================
+# ================= INIT =================
 cfg = load_config()
-
 st.session_state.setdefault("active_ti", cfg["active"])
+
 for ti in ALL_TI:
     st.session_state.setdefault(f"{ti}_key", cfg["keys"].get(ti, ""))
     st.session_state.setdefault(f"{ti}_locked", cfg["locked"].get(ti, False))
@@ -100,8 +92,8 @@ st.session_state.setdefault("scan_results", None)
 st.session_state.setdefault("uploaded_file", None)
 
 # ================= PAGE =================
-st.set_page_config("ViperIntel Pro", "🐍", layout="wide")
-st.title("🐍 ViperIntel Pro")
+st.set_page_config("ViperIntel Pro", "🛡️", layout="wide")
+st.title("🛡️ ViperIntel Pro")
 st.markdown("### Universal Threat Intelligence & Forensic Aggregator")
 
 # ================= SIDEBAR =================
@@ -112,11 +104,7 @@ with st.sidebar:
         st.markdown(f"**{ti}**")
 
         if not st.session_state[f"{ti}_locked"]:
-            val = st.text_input(
-                f"{ti} API Key",
-                type="password",
-                key=f"input_{ti}"
-            )
+            val = st.text_input(f"{ti} API Key", type="password", key=f"input_{ti}")
             if val:
                 st.session_state[f"{ti}_key"] = val
                 st.session_state[f"{ti}_locked"] = True
@@ -180,7 +168,7 @@ def expand(v):
     except:
         return []
 
-# ================= SCAN WORKER (THREAD SAFE) =================
+# ================= SCAN WORKER =================
 def scan_ip(ip, abuse_key, vt_key):
     r = {
         "IP": ip,
@@ -265,10 +253,22 @@ if st.button("⚡ EXECUTE DEEP SCAN"):
 
     st.session_state.scan_results = pd.DataFrame(results)
 
-# ================= RESULTS =================
+# ================= RESULTS (UPDATED OUTPUT ONLY) =================
 if st.session_state.scan_results is not None:
+    df = st.session_state.scan_results.copy()
+
+    # ✅ S.NO starting from 1
+    df.insert(0, "S.NO", range(1, len(df) + 1))
+
+    # ✅ Column selector
     st.subheader("📋 Intelligence Report")
-    st.dataframe(st.session_state.scan_results, use_container_width=True)
+    selected_cols = st.multiselect(
+        "Select columns to display",
+        options=df.columns.tolist(),
+        default=df.columns.tolist()
+    )
+
+    st.dataframe(df[selected_cols], use_container_width=True)
 
 # ================= FOOTER =================
 st.markdown(
@@ -289,7 +289,7 @@ st.markdown(
     </style>
 
     <div class="viper-footer">
-        © 2026 <b>ViperIntel Pro</b> · Developed by <a href="https://maveera.tech">Maveera</a>
+        © 2026 <b>ViperIntel Pro</b> · Developed by <a href="http://maveera.tech">Maveera</a>
     </div>
     """,
     unsafe_allow_html=True
