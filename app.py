@@ -30,31 +30,41 @@ def decrypt_safe(v):
 
 # ================= THREAT INTEL SOURCES =================
 ALL_TI = [
-    # IP / Reputation
-    "AbuseIPDB", "IPQualityScore", "GreyNoise", "Spamhaus",
-    "Project Honey Pot", "Talos Reputation", "FortiGuard IP Reputation",
-    "Barracuda Reputation", "CleanTalk", "SANS ISC",
+    # IP / Network / Reputation
+    "AbuseIPDB","IPQualityScore","GreyNoise","Spamhaus","Project Honey Pot",
+    "Talos Reputation","FortiGuard IP Reputation","Barracuda Reputation",
+    "Proofpoint ET Intelligence","CleanTalk","SANS ISC","Team Cymru",
+    "Shadowserver IP Feeds","SpamCop Blocking List","OpenBL",
+    "Blocklist.de","FireHOL IP Lists",
 
-    # Malware / Sandbox
-    "VirusTotal", "Hybrid Analysis", "Any.Run", "Joe Sandbox",
-    "MalwareBazaar", "ThreatFox", "VirusShare",
-    "OPSWAT MetaDefender", "ReversingLabs",
+    # Malware / Sandbox / IOC
+    "VirusTotal","MalwareBazaar","ThreatFox","VirusShare","Hybrid Analysis",
+    "Any.Run","Joe Sandbox","InQuest Labs","ReversingLabs",
+    "OPSWAT MetaDefender","MalShare","YARAify","PolySwarm",
+    "Cuckoo Sandbox Feeds",
 
-    # Phishing / URL
-    "OpenPhish", "PhishTank", "URLhaus", "Google Safe Browsing",
-    "Microsoft SmartScreen", "Netcraft", "SpamCop", "SURBL",
+    # Phishing / URL / Domain
+    "OpenPhish","PhishTank","URLhaus","Google Safe Browsing",
+    "Microsoft SmartScreen","Netcraft","SpamCop URI","SURBL",
+    "PhishStats","APWG eCrime Exchange","Cofense Intelligence",
+    "Proofpoint URL Defense","Palo Alto URL Filtering",
 
     # Open / CERT / Community
-    "AlienVault OTX", "MISP", "Shadowserver", "Abuse.ch",
-    "FIRST.org", "CERT-IN", "US-CERT (CISA)", "NCSC UK",
-    "Team Cymru",
+    "AlienVault OTX","MISP","OpenCTI","Abuse.ch","CIRCL","FIRST.org",
+    "CERT-IN","US-CERT (CISA)","NCSC UK","CERT-EU","JPCERT/CC",
+    "KISA","AusCERT","GovCERT.ch",
 
     # Enterprise / Vendor
-    "Cisco Talos", "IBM X-Force", "Palo Alto Unit42",
-    "CrowdStrike Falcon Intelligence", "Recorded Future",
-    "Microsoft Defender Threat Intelligence",
-    "Kaspersky Threat Intelligence", "Check Point ThreatCloud",
-    "Trend Micro TI", "SophosLabs"
+    "Microsoft Defender Threat Intelligence","Cisco Talos","IBM X-Force Exchange",
+    "Palo Alto Unit 42","CrowdStrike Falcon Intelligence","Recorded Future",
+    "Kaspersky Threat Intelligence","Check Point ThreatCloud","Trend Micro TI",
+    "SophosLabs","Secureworks CTU","Mandiant Advantage","Bitdefender TI",
+    "Zscaler ThreatLabZ","Akamai Threat Intelligence","Cloudflare Radar",
+    "Rapid7 InsightIDR",
+
+    # Blockchain / Fraud / Abuse
+    "Chainalysis","TRM Labs","CipherTrace","Elliptic","Abuse.ch SSLBL",
+    "ScamAdviser"
 ]
 
 
@@ -115,8 +125,8 @@ st.session_state.setdefault("scan_results", None)
 st.session_state.setdefault("uploaded_file", None)
 
 # ================= PAGE =================
-st.set_page_config("ViperIntel Pro", "🛡️", layout="wide")
-st.title("🛡️ ViperIntel Pro")
+st.set_page_config("ViperIntel Pro", "🐍", layout="wide")
+st.title("🐍 ViperIntel Pro")
 st.markdown("### Universal Threat Intelligence & Forensic Aggregator")
 
 # ================= SIDEBAR =================
