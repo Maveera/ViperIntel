@@ -26,7 +26,7 @@ def decrypt_safe(val: str):
     try:
         return FERNET.decrypt(val.encode()).decode()
     except InvalidToken:
-        return None  # graceful failure
+        return None
 
 # ================= AUDIT =================
 def audit(action):
@@ -57,13 +57,12 @@ def load_config():
     with open(CONFIG_FILE, "r") as f:
         cfg = json.load(f)
 
-    clean_keys = {}
-    clean_locked = {}
+    clean_keys, clean_locked = {}, {}
 
-    for ti, enc_val in cfg.get("keys", {}).items():
-        dec = decrypt_safe(enc_val)
+    for ti, enc in cfg.get("keys", {}).items():
+        dec = decrypt_safe(enc)
         if dec is None:
-            audit(f"Invalid encryption token detected for {ti} – key reset")
+            audit(f"Invalid token for {ti}, key reset")
             clean_keys[ti] = ""
             clean_locked[ti] = False
         else:
@@ -72,7 +71,6 @@ def load_config():
 
     cfg["keys"] = clean_keys
     cfg["locked"] = clean_locked
-
     return cfg
 
 def save_config():
@@ -95,17 +93,17 @@ def save_config():
 # ================= INIT =================
 config = load_config()
 
-st.session_state.setdefault("active_ti", config.get("active_ti", DEFAULT_CONFIG["active_ti"]))
-st.session_state.setdefault("inactive_ti", config.get("inactive_ti", DEFAULT_CONFIG["inactive_ti"]))
+st.session_state.setdefault("active_ti", config["active_ti"])
+st.session_state.setdefault("inactive_ti", config["inactive_ti"])
 
 for ti in ALL_TI_ENGINES:
-    st.session_state.setdefault(f"{ti}_key", config.get("keys", {}).get(ti, ""))
-    st.session_state.setdefault(f"{ti}_locked", config.get("locked", {}).get(ti, False))
+    st.session_state.setdefault(f"{ti}_key", config["keys"].get(ti, ""))
+    st.session_state.setdefault(f"{ti}_locked", config["locked"].get(ti, False))
 
 st.session_state.setdefault("scan_results", None)
 st.session_state.setdefault("uploaded_file", None)
 
-# ================= UI =================
+# ================= PAGE =================
 st.set_page_config(page_title="ViperIntel Pro", page_icon="🛡️", layout="wide")
 st.title("🛡️ ViperIntel Pro")
 st.markdown("#### Universal Threat Intelligence & Forensic Aggregator")
@@ -122,7 +120,7 @@ with st.sidebar:
             if val:
                 st.session_state[f"{ti}_key"] = val
                 st.session_state[f"{ti}_locked"] = True
-                audit(f"{ti} key set/updated")
+                audit(f"{ti} key updated")
                 save_config()
                 st.rerun()
         else:
@@ -220,3 +218,25 @@ if st.button("⚡ EXECUTE DEEP SCAN"):
 if st.session_state.scan_results is not None:
     st.subheader("📋 Intelligence Report")
     st.dataframe(st.session_state.scan_results, use_container_width=True)
+
+# ================= FOOTER =================
+st.markdown("""
+<style>
+.custom-footer {
+    position: fixed;
+    left: 0;
+    bottom: 0;
+    width: 100%;
+    background-color: rgba(10,14,20,0.95);
+    color: #94a3b8;
+    text-align: center;
+    padding: 14px;
+    border-top: 1px solid #1f2937;
+    z-index: 1000;
+}
+</style>
+
+<div class="custom-footer">
+© 2026 <b>ViperIntel Pro</b> | All Rights Reserved
+</div>
+""", unsafe_allow_html=True)
