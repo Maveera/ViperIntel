@@ -310,19 +310,47 @@ st.markdown(
     .viper-footer {
         position: fixed;
         bottom: 0;
+        left: 0;
         width: 100%;
-        background: rgba(2, 6, 23, 0.95);
-        color: #94a3b8;
-        text-align: center;
-        padding: 12px;
+        background: rgba(2, 6, 23, 0.96);
         border-top: 1px solid #1f2937;
-        font-size: 14px;
         z-index: 9999;
+    }
+
+    .viper-footer-content {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 12px 10px;
+        color: #94a3b8;
+        font-size: 14px;
+        gap: 4px;
+    }
+
+    .viper-footer-content a {
+        color: #00ffcc;
+        text-decoration: none;
+        font-weight: 600;
+    }
+
+    @media (max-width: 768px) {
+        .viper-footer-content {
+            font-size: 13px;
+            padding: 10px 6px;
+        }
     }
     </style>
 
     <div class="viper-footer">
-     <center> © 2026 <b>ViperIntel Pro</b> · Developed by <a href="http://maveera.tech">Maveera</a></center>
+        <div class="viper-footer-content">
+            <div>© 2026 <b>ViperIntel Pro</b></div>
+            <div>
+                Developed by 
+                <a href="https://maveera.tech" target="_blank">Maveera</a>
+            </div>
+        </div>
     </div>
     """,
     unsafe_allow_html=True
