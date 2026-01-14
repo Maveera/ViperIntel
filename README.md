@@ -44,15 +44,3 @@ AbuseIPDB API
 VirusTotal API
 AlienVault OTX
 IPQualityScore
-
-
-
-### 3. The `requirements.txt` (Essential)
-Create another file named `requirements.txt` and paste this:
-
-streamlit
-requests
-pandas
-folium
-streamlit-folium
-streamlit-lottie
