@@ -30,10 +30,33 @@ def decrypt_safe(v):
 
 # ================= THREAT INTEL SOURCES =================
 ALL_TI = [
-    "AbuseIPDB", "VirusTotal", "AlienVault OTX", "GreyNoise",
-    "Spamhaus", "IPQualityScore", "Cisco Talos", "IBM X-Force",
-    "CrowdStrike Falcon", "Recorded Future"
+    # IP / Reputation
+    "AbuseIPDB", "IPQualityScore", "GreyNoise", "Spamhaus",
+    "Project Honey Pot", "Talos Reputation", "FortiGuard IP Reputation",
+    "Barracuda Reputation", "CleanTalk", "SANS ISC",
+
+    # Malware / Sandbox
+    "VirusTotal", "Hybrid Analysis", "Any.Run", "Joe Sandbox",
+    "MalwareBazaar", "ThreatFox", "VirusShare",
+    "OPSWAT MetaDefender", "ReversingLabs",
+
+    # Phishing / URL
+    "OpenPhish", "PhishTank", "URLhaus", "Google Safe Browsing",
+    "Microsoft SmartScreen", "Netcraft", "SpamCop", "SURBL",
+
+    # Open / CERT / Community
+    "AlienVault OTX", "MISP", "Shadowserver", "Abuse.ch",
+    "FIRST.org", "CERT-IN", "US-CERT (CISA)", "NCSC UK",
+    "Team Cymru",
+
+    # Enterprise / Vendor
+    "Cisco Talos", "IBM X-Force", "Palo Alto Unit42",
+    "CrowdStrike Falcon Intelligence", "Recorded Future",
+    "Microsoft Defender Threat Intelligence",
+    "Kaspersky Threat Intelligence", "Check Point ThreatCloud",
+    "Trend Micro TI", "SophosLabs"
 ]
+
 
 SUPPORTED_TI = ["AbuseIPDB", "VirusTotal"]
 DEFAULT_ACTIVE = ["AbuseIPDB", "VirusTotal"]
