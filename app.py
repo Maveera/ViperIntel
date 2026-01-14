@@ -3,6 +3,7 @@ import pandas as pd
 import time
 import folium
 from streamlit_folium import st_folium
+import streamlit.components.v1 as components
 
 # ---------------- PAGE CONFIG ----------------
 st.set_page_config(
@@ -63,6 +64,7 @@ with st.sidebar:
     st.divider()
     st.subheader("🔑 Global API Configuration")
 
+    # -------- FIXED API INPUT (HTML RENDER SAFE) --------
     def api_input(label, engine):
         if not st.session_state[f"{engine}_locked"]:
             val = st.text_input(label, type="password", key=f"inp_{engine}")
@@ -73,35 +75,40 @@ with st.sidebar:
         else:
             st.markdown(f"**{label}**")
 
-            html = f"""
-            <div style="display:flex;align-items:center;gap:10px;">
-                <div style="
-                    flex:1;
-                    height:42px;
-                    display:flex;
-                    align-items:center;
-                    padding:0 14px;
-                    background:rgba(255,255,255,0.05);
-                    border:1px solid rgba(255,255,255,0.15);
-                    border-radius:10px;
-                    color:#8b949e;
-                    letter-spacing:3px;
-                ">
-                    ••••••••••••••••
+            components.html(
+                f"""
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <div style="
+                        flex:1;
+                        height:42px;
+                        display:flex;
+                        align-items:center;
+                        padding:0 14px;
+                        background:rgba(255,255,255,0.05);
+                        border:1px solid rgba(255,255,255,0.15);
+                        border-radius:10px;
+                        color:#8b949e;
+                        letter-spacing:3px;
+                        font-family:monospace;
+                    ">
+                        ••••••••••••••••
+                    </div>
+
+                    <button class="neon-btn"
+                        onclick="window.location.search='?edit={engine}'">
+                        Edit
+                    </button>
                 </div>
+                """,
+                height=55
+            )
 
-                <button class="neon-btn"
-                    onclick="window.location.search='?edit={engine}'">
-                    Edit
-                </button>
-            </div>
-            """
-            st.markdown(html, unsafe_allow_html=True)
-
+            # Handle click
             if st.query_params.get("edit") == engine:
                 st.session_state[f"{engine}_locked"] = False
                 st.query_params.clear()
                 st.rerun()
+    # --------------------------------------------------
 
     for eng in primary_engines:
         api_input(f"{eng} Key", eng)
