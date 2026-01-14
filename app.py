@@ -29,19 +29,6 @@ st.markdown("""
 .stApp { background-color:#0a0e14; color:#e0e6ed; }
 footer { visibility:hidden; }
 .author-text { color:#00ffcc; font-weight:bold; }
-
-.neon-btn {
-    background:#00ffcc;
-    color:#0a0e14;
-    font-weight:bold;
-    border:none;
-    border-radius:10px;
-    height:42px;
-    padding:0 18px;
-    cursor:pointer;
-    box-shadow:0 0 12px #00ffcc;
-}
-.neon-btn:hover { box-shadow:0 0 18px #00ffcc; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -60,11 +47,14 @@ with col_reset:
 # ---------------- SIDEBAR ----------------
 with st.sidebar:
     st.markdown("## 🛡️ TI Command Center")
-    st.markdown("Developed by: <span class='author-text'>Maveera</span>", unsafe_allow_html=True)
+    st.markdown(
+        "Developed by: <span class='author-text'>Maveera</span>",
+        unsafe_allow_html=True
+    )
     st.divider()
     st.subheader("🔑 Global API Configuration")
 
-    # -------- FIXED API INPUT (HTML RENDER SAFE) --------
+    # -------- IMAGE-2 STYLE API FIELD --------
     def api_input(label, engine):
         if not st.session_state[f"{engine}_locked"]:
             val = st.text_input(label, type="password", key=f"inp_{engine}")
@@ -77,38 +67,62 @@ with st.sidebar:
 
             components.html(
                 f"""
-                <div style="display:flex;align-items:center;gap:10px;">
-                    <div style="
-                        flex:1;
-                        height:42px;
-                        display:flex;
-                        align-items:center;
-                        padding:0 14px;
-                        background:rgba(255,255,255,0.05);
-                        border:1px solid rgba(255,255,255,0.15);
-                        border-radius:10px;
-                        color:#8b949e;
-                        letter-spacing:3px;
-                        font-family:monospace;
-                    ">
-                        ••••••••••••••••
-                    </div>
+                <style>
+                .api-field {{
+                    width: 100%;
+                    height: 48px;
+                    border-radius: 14px;
+                    border: 1px solid rgba(255,255,255,0.25);
+                    background: rgba(255,255,255,0.04);
+                    display: flex;
+                    align-items: center;
+                    padding: 0 16px;
+                    box-sizing: border-box;
+                    transition: border 0.2s, box-shadow 0.2s;
+                    font-family: monospace;
+                }}
 
-                    <button class="neon-btn"
+                .api-field:focus-within {{
+                    border-color: #4da3ff;
+                    box-shadow: 0 0 0 2px rgba(77,163,255,0.45);
+                }}
+
+                .api-dots {{
+                    flex: 1;
+                    color: #9aa4b2;
+                    letter-spacing: 3px;
+                    font-size: 14px;
+                    user-select: none;
+                }}
+
+                .api-edit {{
+                    color: #4da3ff;
+                    font-weight: 600;
+                    cursor: pointer;
+                    user-select: none;
+                }}
+
+                .api-edit:hover {{
+                    text-decoration: underline;
+                }}
+                </style>
+
+                <div class="api-field" tabindex="0">
+                    <div class="api-dots">••••••••••••••••••••</div>
+                    <div class="api-edit"
                         onclick="window.location.search='?edit={engine}'">
                         Edit
-                    </button>
+                    </div>
                 </div>
                 """,
-                height=55
+                height=70
             )
 
-            # Handle click
             if st.query_params.get("edit") == engine:
                 st.session_state[f"{engine}_locked"] = False
                 st.query_params.clear()
                 st.rerun()
-    # --------------------------------------------------
+    # ----------------------------------------
 
     for eng in primary_engines:
         api_input(f"{eng} Key", eng)
@@ -164,11 +178,7 @@ if st.session_state.scan_results is not None:
     df.index.name = "S.No"
 
     st.subheader("🌐 Geographic Threat Origin")
-    m = folium.Map(
-        location=[20, 0],
-        zoom_start=2,
-        tiles="CartoDB dark_matter"
-    )
+    m = folium.Map(location=[20, 0], zoom_start=2, tiles="CartoDB dark_matter")
 
     for _, r in df.iterrows():
         folium.CircleMarker(
