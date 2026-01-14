@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
-import asyncio
 import ipaddress
+import asyncio
 from datetime import datetime
 
 # =========================
@@ -35,7 +35,7 @@ def valid_ip(ip: str) -> bool:
         return False
 
 # =========================
-# API KEY INPUT (FINAL FIX)
+# API KEY INPUT — FINAL FIX
 # =========================
 def api_input(engine: str):
     key_name = f"{engine}_key"
@@ -43,30 +43,29 @@ def api_input(engine: str):
 
     st.markdown(f"**{engine} Key**")
 
-    # SAME layout for BOTH modes → NO width mismatch
+    # 🔒 ALWAYS use same 2-column layout
     col_key, col_btn = st.columns([6, 2], gap="small")
 
-    # ---------- EDIT MODE ----------
     if not st.session_state[lock_name]:
+        # EDIT MODE (still constrained to column width)
         with col_key:
-            value = st.text_input(
+            val = st.text_input(
                 "",
                 type="password",
                 key=f"input_{engine}",
                 placeholder=f"Enter {engine} API Key",
                 label_visibility="collapsed"
             )
-
         with col_btn:
-            st.empty()  # keeps column width identical
+            st.empty()  # keeps width identical
 
-        if value:
-            st.session_state[key_name] = value
+        if val:
+            st.session_state[key_name] = val
             st.session_state[lock_name] = True
             st.rerun()
 
-    # ---------- LOCKED MODE ----------
     else:
+        # LOCKED MODE
         with col_key:
             st.text_input(
                 "",
@@ -75,7 +74,6 @@ def api_input(engine: str):
                 label_visibility="collapsed",
                 key=f"mask_{engine}"
             )
-
         with col_btn:
             if st.button(
                 "Edit",
@@ -105,7 +103,7 @@ with st.sidebar:
 uploaded = st.file_uploader("Upload CSV (IPs in first column)", type=["csv"])
 
 # =========================
-# ASYNC SCAN (SIMPLE PLACEHOLDER)
+# SCAN LOGIC (PLACEHOLDER)
 # =========================
 async def enrich_ip(ip: str):
     await asyncio.sleep(0)
@@ -126,7 +124,7 @@ if st.button("⚡ EXECUTE SCAN") and uploaded:
     ips = [ip for ip in df.iloc[:, 0].astype(str) if valid_ip(ip)]
 
     if not ips:
-        st.error("No valid IPs found in the file.")
+        st.error("No valid IPs found.")
     else:
         with st.spinner("Scanning IPs…"):
             st.session_state.scan_results = pd.DataFrame(
@@ -134,7 +132,7 @@ if st.button("⚡ EXECUTE SCAN") and uploaded:
             )
 
 # =========================
-# RESULTS (ALL IPS + S.No FIX)
+# RESULTS
 # =========================
 if st.session_state.scan_results is not None:
     res = st.session_state.scan_results.copy()
