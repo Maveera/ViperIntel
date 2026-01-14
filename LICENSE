@@ -4,13 +4,12 @@ Maintainer: Mavizz
 
 ©2026 All Rights Reserved | maveera.tech
 
----
 
-### 2. The LICENSE File
+# ### 2. The LICENSE File
 Create a second file named `LICENSE` (no extension) and paste the standard **MIT License** text below. This tells people they are free to use and edit your code as long as they give you credit.
 
-```text
-MIT License
+
+# MIT License
 
 Copyright (c) 2026 Maveera
 
