@@ -7,12 +7,9 @@ from datetime import datetime
 from cryptography.fernet import Fernet
 
 # ================= FILES =================
-CONFIG_DIR = "configs"
-AUDIT_DIR = "audit_logs"
+CONFIG_FILE = "config.json"
+AUDIT_FILE = "audit.log"
 KEY_FILE = ".secret.key"
-
-os.makedirs(CONFIG_DIR, exist_ok=True)
-os.makedirs(AUDIT_DIR, exist_ok=True)
 
 # ================= ENCRYPTION =================
 def load_or_create_key():
@@ -30,17 +27,9 @@ def decrypt(val: str) -> str:
     return FERNET.decrypt(val.encode()).decode()
 
 # ================= AUDIT =================
-def audit(user, action):
-    with open(f"{AUDIT_DIR}/audit_{user}.log", "a") as f:
+def audit(action):
+    with open(AUDIT_FILE, "a") as f:
         f.write(f"{datetime.utcnow().isoformat()}Z | {action}\n")
-
-# ================= USER =================
-st.sidebar.subheader("👤 User")
-username = st.sidebar.text_input("Username", value="default").strip()
-if not username:
-    st.stop()
-
-CONFIG_FILE = f"{CONFIG_DIR}/config_{username}.json"
 
 # ================= TI =================
 ALL_TI_ENGINES = [
@@ -72,8 +61,15 @@ def save_config():
     cfg = {
         "active_ti": st.session_state.active_ti,
         "inactive_ti": st.session_state.inactive_ti,
-        "keys": {ti: encrypt(st.session_state[f"{ti}_key"]) for ti in ALL_TI_ENGINES if st.session_state[f"{ti}_key"]},
-        "locked": {ti: st.session_state[f"{ti}_locked"] for ti in ALL_TI_ENGINES}
+        "keys": {
+            ti: encrypt(st.session_state[f"{ti}_key"])
+            for ti in ALL_TI_ENGINES
+            if st.session_state[f"{ti}_key"]
+        },
+        "locked": {
+            ti: st.session_state[f"{ti}_locked"]
+            for ti in ALL_TI_ENGINES
+        }
     }
     with open(CONFIG_FILE, "w") as f:
         json.dump(cfg, f, indent=2)
@@ -88,11 +84,11 @@ for ti in ALL_TI_ENGINES:
     st.session_state.setdefault(f"{ti}_key", config["keys"].get(ti, ""))
     st.session_state.setdefault(f"{ti}_locked", config["locked"].get(ti, False))
 
-# 🔹 DATA STATE (RESETTABLE)
 st.session_state.setdefault("scan_results", None)
 st.session_state.setdefault("uploaded_file", None)
 
 # ================= UI =================
+st.set_page_config(page_title="ViperIntel Pro", page_icon="🛡️", layout="wide")
 st.title("🛡️ ViperIntel Pro")
 st.markdown("#### Universal Threat Intelligence & Forensic Aggregator")
 
@@ -108,7 +104,7 @@ with st.sidebar:
             if val:
                 st.session_state[f"{ti}_key"] = val
                 st.session_state[f"{ti}_locked"] = True
-                audit(username, f"{ti} key updated")
+                audit(f"{ti} key updated")
                 save_config()
                 st.rerun()
         else:
@@ -121,7 +117,7 @@ with st.sidebar:
         if st.button("Remove", key=f"remove_{ti}"):
             st.session_state.active_ti.remove(ti)
             st.session_state.inactive_ti.append(ti)
-            audit(username, f"{ti} removed from active")
+            audit(f"{ti} removed from active")
             save_config()
             st.rerun()
 
@@ -129,20 +125,24 @@ with st.sidebar:
         ti_block(ti)
 
     if st.session_state.inactive_ti:
-        add_ti = st.selectbox("➕ Add Threat Intelligence Source", ["Select TI"] + st.session_state.inactive_ti)
+        st.divider()
+        add_ti = st.selectbox(
+            "➕ Add Threat Intelligence Source",
+            ["Select TI"] + st.session_state.inactive_ti
+        )
         if add_ti != "Select TI":
             st.session_state.inactive_ti.remove(add_ti)
             st.session_state.active_ti.append(add_ti)
-            audit(username, f"{add_ti} added to active")
+            audit(f"{add_ti} added to active")
             save_config()
             st.rerun()
 
-    # 🔴 DATA RESET ONLY
+    # 🔹 DATA RESET ONLY
     st.divider()
     if st.button("🧹 Clear Scan Data"):
         st.session_state.scan_results = None
         st.session_state.uploaded_file = None
-        audit(username, "Scan data cleared")
+        audit("Scan data cleared")
         st.rerun()
 
 # ================= FILE UPLOAD =================
