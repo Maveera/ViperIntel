@@ -1,27 +1,38 @@
-# 🐍 ViperIntel Pro 
-### Multi-Engine Open Source Threat Intelligence Dashboard
+# 🐍 ViperIntel Pro
+### Multi-Engine IP Reputation & Geospatial Analysis Dashboard
 
-ViperIntel Pro is a high-performance, open-source IP reputation analyzer. It allows security researchers and SOC analysts to cross-reference IPs against four major threat intelligence engines and visualize threat origins on a global map.
+[![Open Source Love](https://badges.frapsoft.com/os/v1/open-source.svg?v=103)](https://github.com/ellerbrock/open-source-badges/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
----
+**ViperIntel Pro** is a high-performance Threat Intelligence (TI) tool designed to help security analysts cross-reference suspicious IP addresses against the world's leading reputation databases. 
 
-## 🚀 Features
-- **Quad-Engine Scanning:** Integrates AbuseIPDB, VirusTotal, AlienVault OTX, and IPQualityScore.
-- **Geospatial Mapping:** Real-time satellite mapping of malicious IP locations.
-- **Risk Scoring:** Automated "High Risk" vs "Clean" categorization.
-- **Email Automation:** Option to have the final report sent directly to your inbox.
-- **Privacy First:** This tool does not store your API keys. They are processed locally in your browser session.
+[Image of a professional cyber threat intelligence dashboard architecture]
 
 ---
 
-## 🛠️ Setup & Installation
+## 🚀 Key Capabilities
+- **Universal Aggregation:** One-click scanning across **AbuseIPDB**, **VirusTotal**, **AlienVault OTX**, and **IPQualityScore**.
+- **Live Mapping:** Real-time satellite visualization of IP origins to identify geographic attack patterns.
+- **Fraud Detection:** Detects VPNs, Proxies, and high-risk residential connections.
+- **Email Automation:** Automatically sends a CSV intel report to your inbox upon scan completion.
+- **Private & Secure:** We do not store your API keys. They are used only for the duration of your session.
 
-### Option 1: Live Web Version
-Access the live version hosted on Streamlit here: `[YOUR_STREAMLIT_URL_HERE]`
+---
 
-### Option 2: Local Development
-If you want to run this on your own machine:
-1. **Clone the repository:**
-   ```bash
-   git clone [https://github.com/](https://github.com/)[YOUR_USERNAME]/viper-intel-pro.git
-   cd viper-intel-pro
+## 🛠️ Quick Start
+
+### For Users
+1. Access the web app: `[PASTE_YOUR_STREAMLIT_LINK_HERE]`
+2. Enter your API keys in the sidebar.
+3. Upload a CSV of IPs and hit **Execute Deep Scan**.
+
+### For Developers (Local Install)
+```bash
+# Clone the repo
+git clone [https://github.com/yourusername/viperintel-pro.git](https://github.com/yourusername/viperintel-pro.git)
+
+# Install requirements
+pip install -r requirements.txt
+
+# Run the dashboard
+streamlit run app.py
