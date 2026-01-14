@@ -4,6 +4,7 @@ import pandas as pd
 import json, os
 from datetime import datetime
 from cryptography.fernet import Fernet, InvalidToken
+from pandas.errors import EmptyDataError
 
 # ================= FILES =================
 CONFIG_FILE = "config.json"
@@ -33,34 +34,23 @@ def audit(action):
     with open(AUDIT_FILE, "a") as f:
         f.write(f"{datetime.utcnow().isoformat()}Z | {action}\n")
 
-# ================= GLOBAL TI (SOURCE OF TRUTH) =================
+# ================= GLOBAL TI SOURCES =================
 ALL_TI_ENGINES = [
-    # IP / Reputation
     "AbuseIPDB","IPQualityScore","GreyNoise","Spamhaus","Project Honey Pot",
     "IPInfo","MaxMind","Spur.us","CleanTalk","SANS ISC","Talos Reputation",
     "FortiGuard IP Reputation","Barracuda Reputation","Proofpoint ET Intelligence",
-
-    # Malware / Sandbox
     "VirusTotal","Hybrid Analysis","Any.Run","Joe Sandbox","MalwareBazaar",
     "VirusShare","ThreatFox","InQuest","ReversingLabs","OPSWAT MetaDefender",
-    "YARAify","MalShare",
-
-    # Phishing / URL
-    "OpenPhish","PhishTank","URLhaus","Google Safe Browsing",
-    "Microsoft SmartScreen","Netcraft","APWG eCrime Exchange",
-    "Cofense Intelligence","SpamCop","SURBL","PhishStats",
-
-    # Open / CERT
-    "AlienVault OTX","MISP","CIRCL","Shadowserver","Abuse.ch","FIRST.org",
-    "CERT-EU","US-CERT (CISA)","NCSC UK","CERT-IN","Team Cymru",
-
-    # Enterprise
-    "Microsoft Defender Threat Intelligence","IBM X-Force","Cisco Talos",
-    "Palo Alto Unit42","CrowdStrike Falcon Intelligence","Recorded Future",
-    "Kaspersky Threat Intelligence","Check Point ThreatCloud",
-    "Secureworks CTU","Mandiant","Trend Micro TI","Bitdefender TI",
-    "SophosLabs","Rapid7 InsightIDR","ESET Threat Intelligence",
-    "Zscaler ThreatLabZ","Akamai Threat Intelligence","Cloudflare Radar"
+    "YARAify","MalShare","OpenPhish","PhishTank","URLhaus","Google Safe Browsing",
+    "Microsoft SmartScreen","Netcraft","APWG eCrime Exchange","Cofense Intelligence",
+    "SpamCop","SURBL","PhishStats","AlienVault OTX","MISP","CIRCL","Shadowserver",
+    "Abuse.ch","FIRST.org","CERT-EU","US-CERT (CISA)","NCSC UK","CERT-IN",
+    "Team Cymru","Microsoft Defender Threat Intelligence","IBM X-Force",
+    "Cisco Talos","Palo Alto Unit42","CrowdStrike Falcon Intelligence",
+    "Recorded Future","Kaspersky Threat Intelligence","Check Point ThreatCloud",
+    "Secureworks CTU","Mandiant","Trend Micro TI","Bitdefender TI","SophosLabs",
+    "Rapid7 InsightIDR","ESET Threat Intelligence","Zscaler ThreatLabZ",
+    "Akamai Threat Intelligence","Cloudflare Radar"
 ]
 
 SUPPORTED_TI = ["AbuseIPDB", "VirusTotal"]
@@ -124,7 +114,6 @@ st.markdown("""
 <style>
 .stApp { background: radial-gradient(circle at top left, #0f172a, #020617); }
 footer { visibility:hidden; }
-
 .custom-footer {
     position: fixed;
     bottom: 0;
@@ -205,6 +194,10 @@ if uploaded:
 
 # ================= SCAN =================
 if st.button("⚡ EXECUTE DEEP SCAN"):
+    if st.session_state.uploaded_file is None:
+        st.error("❌ Please upload a CSV file.")
+        st.stop()
+
     active_supported = [
         ti for ti in st.session_state.active_ti
         if ti in SUPPORTED_TI and st.session_state[f"{ti}_key"]
@@ -212,45 +205,64 @@ if st.button("⚡ EXECUTE DEEP SCAN"):
 
     if not active_supported:
         st.error("❌ Configure at least one supported TI (AbuseIPDB / VirusTotal).")
-    elif not st.session_state.uploaded_file:
-        st.error("❌ Upload a CSV file.")
-    else:
+        st.stop()
+
+    try:
         df = pd.read_csv(st.session_state.uploaded_file, header=None)
-        ips = df.iloc[:, 0].astype(str).tolist()
+    except EmptyDataError:
+        st.error("❌ The uploaded CSV file is empty or invalid.")
+        st.stop()
 
-        results = []
-        for ip in ips:
-            intel = {"IP": ip, "Status": "Clean", "Abuse Score": 0, "VT Hits": 0}
+    if df.empty or df.shape[1] == 0:
+        st.error("❌ CSV file contains no usable data.")
+        st.stop()
 
-            if "AbuseIPDB" in active_supported:
-                try:
-                    r = requests.get(
-                        "https://api.abuseipdb.com/api/v2/check",
-                        headers={"Key": st.session_state["AbuseIPDB_key"], "Accept": "application/json"},
-                        params={"ipAddress": ip},
-                        timeout=10
-                    ).json()
-                    intel["Abuse Score"] = r.get("data", {}).get("abuseConfidenceScore", 0)
-                except:
-                    pass
+    ips = (
+        df.iloc[:, 0]
+        .astype(str)
+        .str.strip()
+        .replace("", pd.NA)
+        .dropna()
+        .tolist()
+    )
 
-            if "VirusTotal" in active_supported:
-                try:
-                    r = requests.get(
-                        f"https://www.virustotal.com/api/v3/ip_addresses/{ip}",
-                        headers={"x-apikey": st.session_state["VirusTotal_key"]},
-                        timeout=10
-                    ).json()
-                    intel["VT Hits"] = r["data"]["attributes"]["last_analysis_stats"].get("malicious", 0)
-                except:
-                    pass
+    if not ips:
+        st.error("❌ No valid IP addresses found in the first column.")
+        st.stop()
 
-            if intel["Abuse Score"] > 25 or intel["VT Hits"] > 0:
-                intel["Status"] = "🚨 Malicious"
+    results = []
+    for ip in ips:
+        intel = {"IP": ip, "Status": "Clean", "Abuse Score": 0, "VT Hits": 0}
 
-            results.append(intel)
+        if "AbuseIPDB" in active_supported:
+            try:
+                r = requests.get(
+                    "https://api.abuseipdb.com/api/v2/check",
+                    headers={"Key": st.session_state["AbuseIPDB_key"], "Accept": "application/json"},
+                    params={"ipAddress": ip},
+                    timeout=10
+                ).json()
+                intel["Abuse Score"] = r.get("data", {}).get("abuseConfidenceScore", 0)
+            except:
+                pass
 
-        st.session_state.scan_results = pd.DataFrame(results)
+        if "VirusTotal" in active_supported:
+            try:
+                r = requests.get(
+                    f"https://www.virustotal.com/api/v3/ip_addresses/{ip}",
+                    headers={"x-apikey": st.session_state["VirusTotal_key"]},
+                    timeout=10
+                ).json()
+                intel["VT Hits"] = r["data"]["attributes"]["last_analysis_stats"].get("malicious", 0)
+            except:
+                pass
+
+        if intel["Abuse Score"] > 25 or intel["VT Hits"] > 0:
+            intel["Status"] = "🚨 Malicious"
+
+        results.append(intel)
+
+    st.session_state.scan_results = pd.DataFrame(results)
 
 # ================= RESULTS =================
 if st.session_state.scan_results is not None:
