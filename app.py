@@ -1,37 +1,33 @@
 import streamlit as st
 import pandas as pd
 import time
+import ipaddress
+import hashlib
 import folium
 from streamlit_folium import st_folium
 
-# -------------------------------------------------
-# PAGE CONFIG
-# -------------------------------------------------
+# ---------------- PAGE CONFIG ----------------
 st.set_page_config(
     page_title="ViperIntel Pro | By Maveera",
     page_icon="🛡️",
     layout="wide"
 )
 
-# -------------------------------------------------
-# SESSION STATE INIT
-# -------------------------------------------------
+# ---------------- CONSTANTS ----------------
 ENGINES = ["AbuseIPDB", "VirusTotal", "AlienVault OTX"]
 
-for e in ENGINES:
-    st.session_state.setdefault(f"{e}_key", "")
-    st.session_state.setdefault(f"{e}_locked", False)
-    st.session_state.setdefault(f"{e}_tmp", "")
+# ---------------- SESSION STATE ----------------
+for engine in ENGINES:
+    st.session_state.setdefault(f"{engine}_key", "")
+    st.session_state.setdefault(f"{engine}_editing", True)
 
 st.session_state.setdefault("scan_results", None)
 
-# -------------------------------------------------
-# GLOBAL STYLES
-# -------------------------------------------------
+# ---------------- GLOBAL STYLES ----------------
 st.markdown("""
 <style>
 .stApp { background-color: #0a0e14; color: #e0e6ed; }
-footer { visibility: hidden; }
+footer { visibility:hidden; }
 
 .api-box {
     width: 100%;
@@ -41,126 +37,150 @@ footer { visibility: hidden; }
     background: rgba(255,255,255,0.04);
     display: flex;
     align-items: center;
+    justify-content: space-between;
     padding: 0 16px;
     font-family: monospace;
     color: #9aa4b2;
-    letter-spacing: 3px;
-    position: relative;
 }
 
-.api-edit {
-    position: absolute;
-    right: 16px;
+.api-btn {
+    background: none;
+    border: none;
     color: #4da3ff;
     font-weight: 600;
     cursor: pointer;
 }
-
-.api-edit:hover {
-    text-decoration: underline;
-}
 </style>
 """, unsafe_allow_html=True)
 
-# -------------------------------------------------
-# API INPUT COMPONENT (FIXED)
-# -------------------------------------------------
-def api_input(label, engine):
-    key_name = f"{engine}_key"
-    lock_name = f"{engine}_locked"
-    tmp_name = f"{engine}_tmp"
+# ---------------- UTILITIES ----------------
+def valid_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value.strip())
+        return True
+    except ValueError:
+        return False
 
-    # ---------- EDIT MODE ----------
-    if not st.session_state[lock_name]:
-        val = st.text_input(
-            label,
+def pseudo_geo(ip: str):
+    """
+    Deterministic pseudo-geo for simulation.
+    Prevents overlap and avoids fake real-world claims.
+    """
+    h = int(hashlib.md5(ip.encode()).hexdigest(), 16)
+    lat = ((h % 1800000) / 10000) - 90
+    lon = ((h % 3600000) / 10000) - 180
+    return round(lat, 4), round(lon, 4)
+
+# ---------------- API INPUT ----------------
+def api_input(engine):
+    key = f"{engine}_key"
+    editing = f"{engine}_editing"
+
+    st.markdown(f"**{engine} Key**")
+
+    if st.session_state[editing]:
+        st.text_input(
+            label="",
             type="password",
-            key=tmp_name
+            key=key,
+            placeholder=f"Enter {engine} API Key",
+            label_visibility="collapsed"
         )
-
-        # ✅ Update ONLY if value actually changed
-        if val and val != st.session_state[key_name]:
-            st.session_state[key_name] = val
-            st.session_state[lock_name] = True
-            st.session_state[tmp_name] = ""
-            st.rerun()
-
-    # ---------- LOCKED MODE ----------
+        if st.button("Lock", key=f"lock_{engine}"):
+            if not st.session_state[key]:
+                st.warning("API key cannot be empty.")
+            else:
+                st.session_state[editing] = False
+                st.rerun()
     else:
-        st.markdown(f"**{label}**")
-
         st.markdown(
             f"""
             <div class="api-box">
                 ••••••••••••••••••••
-                <span class="api-edit">Edit</span>
+                <form method="post">
+                    <button class="api-btn">Edit</button>
+                </form>
             </div>
             """,
             unsafe_allow_html=True
         )
-
-        # Real Streamlit button (logic only)
         if st.button("Edit", key=f"edit_{engine}"):
-            st.session_state[lock_name] = False
-            st.session_state[tmp_name] = st.session_state[key_name]
+            st.session_state[editing] = True
             st.rerun()
 
-# -------------------------------------------------
-# SIDEBAR
-# -------------------------------------------------
+# ---------------- SIDEBAR ----------------
 with st.sidebar:
     st.markdown("## 🛡️ TI Command Center")
     st.divider()
-
     for engine in ENGINES:
-        api_input(f"{engine} Key", engine)
+        api_input(engine)
 
-# -------------------------------------------------
-# MAIN CONTENT
-# -------------------------------------------------
+# ---------------- MAIN ----------------
 st.title("🛡️ SOC Intelligence Console")
 st.markdown("#### Universal Threat Intelligence & Forensic Aggregator")
+st.caption("⚠️ Current mode: **Simulated Threat Enrichment**")
 
-uploaded_file = st.file_uploader("Upload CSV (IPs in first column)", type=["csv"])
+uploaded = st.file_uploader(
+    "Upload CSV (IPs in first column)",
+    type=["csv"]
+)
 
-if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
-    df = pd.read_csv(uploaded_file, header=None)
-    ips = df.iloc[:, 0].astype(str).tolist()
+if st.button("⚡ EXECUTE SIMULATED SCAN") and uploaded:
+    try:
+        df = pd.read_csv(uploaded, header=None)
+    except Exception as e:
+        st.error(f"CSV read failed: {e}")
+        st.stop()
+
+    raw_ips = df.iloc[:, 0].astype(str).tolist()
+    ips = [ip.strip() for ip in raw_ips if valid_ip(ip)]
+
+    if not ips:
+        st.error("No valid IP addresses found.")
+        st.stop()
 
     results = []
     progress = st.progress(0)
+    status = st.empty()
 
     for i, ip in enumerate(ips):
+        status.markdown(f"🔍 **Analyzing:** `{ip}` ({i+1}/{len(ips)})")
+
+        lat, lon = pseudo_geo(ip)
+
         results.append({
             "IP": ip,
-            "Country": "Unknown",
-            "ASN": "N/A",
-            "Reputation": 0,
-            "Lat": 20.0,
-            "Lon": 0.0
+            "Country": "Simulated",
+            "ASN": "AS-UNKNOWN",
+            "Reputation": int(hash(ip)) % 100,
+            "Latitude": lat,
+            "Longitude": lon
         })
+
         progress.progress((i + 1) / len(ips))
-        time.sleep(0.05)
+        time.sleep(0.03)
 
     st.session_state.scan_results = pd.DataFrame(results)
+    status.empty()
 
-# -------------------------------------------------
-# RESULTS
-# -------------------------------------------------
+# ---------------- RESULTS ----------------
 if st.session_state.scan_results is not None:
     res = st.session_state.scan_results
 
-    st.subheader("🌍 Threat Map")
-    m = folium.Map(location=[20, 0], zoom_start=2, tiles="CartoDB dark_matter")
+    st.subheader("🌍 Threat Visualization Map")
+    fmap = folium.Map(location=[0, 0], zoom_start=2, tiles="CartoDB dark_matter")
+
     for _, r in res.iterrows():
         folium.CircleMarker(
-            [r["Lat"], r["Lon"]],
+            location=[r["Latitude"], r["Longitude"]],
             radius=6,
             color="#00ffcc",
-            fill=True
-        ).add_to(m)
+            fill=True,
+            fill_opacity=0.7,
+            tooltip=f"IP: {r['IP']} | Rep: {r['Reputation']}"
+        ).add_to(fmap)
 
-    st_folium(m, width=1200, height=450)
+    st_folium(fmap, width=1200, height=450)
 
-    st.subheader("📋 Report")
+    st.subheader("📋 Enrichment Report")
     st.dataframe(res, use_container_width=True)
