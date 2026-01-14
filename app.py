@@ -9,8 +9,11 @@ from streamlit_folium import st_folium
 st.set_page_config(page_title="ViperIntel Pro | By Maveera", page_icon="🛡️", layout="wide")
 
 # --- Session State Management ---
-engines = ["AbuseIPDB", "VirusTotal", "AlienVault OTX", "IPQualityScore", "ThreatFox", "Shodan", "GreyNoise", "CriminalIP"]
-for e in engines:
+primary_engines = ["AbuseIPDB", "VirusTotal", "AlienVault OTX"]
+extended_engines = ["IPQualityScore", "ThreatFox", "Shodan", "GreyNoise", "CriminalIP"]
+all_engines = primary_engines + extended_engines
+
+for e in all_engines:
     if f"{e}_key" not in st.session_state: st.session_state[f"{e}_key"] = ""
     if f"{e}_locked" not in st.session_state: st.session_state[f"{e}_locked"] = False
 if 'scan_results' not in st.session_state: st.session_state.scan_results = None
@@ -39,7 +42,7 @@ st.markdown("""
         background-color: rgba(255, 255, 255, 0.05);
         border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 12px;
-        padding: 8px 12px;
+        padding: 8px 15px;
         display: flex;
         justify-content: space-between;
         align-items: center;
@@ -47,6 +50,7 @@ st.markdown("""
         width: 100%;
     }
     .dots-mask { color: #8b949e; font-size: 18px; letter-spacing: 2px; line-height: 1; }
+    .edit-trigger { color: #58a6ff; font-weight: bold; cursor: pointer; font-size: 14px; border: none; background: none; }
     
     .metric-card { background: #161b22; padding: 20px; border-radius: 10px; border: 1px solid #1f2937; text-align: center; }
     </style>
@@ -79,22 +83,24 @@ with st.sidebar:
                 st.session_state[f"{session_key}_locked"] = True
                 st.rerun()
         else:
-            # Layout Fix: Forced Single Line with st.columns
+            # Layout Fix: Forced Single Line with Flexbox
             st.markdown(f"**{label}**")
-            col_dots, col_edit = st.columns([4, 1.2]) # Adjusted ratio to prevent button wrapping
+            # We use a custom HTML container and a small streamlit button side-by-side
+            col_dots, col_edit = st.columns([4, 1.2])
             with col_dots:
-                st.markdown("""<div style="background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:8px; color:#8b949e; letter-spacing:2px; overflow:hidden;">••••••••••••••••</div>""", unsafe_allow_html=True)
+                st.markdown("""<div style="background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:9px; color:#8b949e; letter-spacing:2px; overflow:hidden;">••••••••••••••••</div>""", unsafe_allow_html=True)
             with col_edit:
-                if st.button("Edit", key=f"btn_{session_key}", use_container_width=True):
+                if st.button("Edit", key=f"btn_{session_key}"):
                     st.session_state[f"{session_key}_locked"] = False
                     st.rerun()
 
     # Show primary 3
-    for engine in engines[:3]:
+    for engine in primary_engines:
         api_input(f"{engine} Key", engine)
     
+    # Hide others in search dropdown
     with st.expander("🔍 Search More Engines"):
-        search_engine = st.selectbox("Select Provider", [""] + engines[3:])
+        search_engine = st.selectbox("Select Provider", [""] + extended_engines)
         if search_engine:
             api_input(f"{search_engine} Key", search_engine)
 
@@ -116,13 +122,14 @@ if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
     for i, ip in enumerate(ips):
         status_msg.markdown(f"🔍 **Analyzing:** `{ip}` ({i+1}/{len(ips)})")
         
+        # Comprehensive forensics
         intel = {
             "IP": ip, "Status": "Clean", "Country": "Unknown", "ISP": "Unknown",
             "ASN": "N/A", "Network": "N/A", "Reputation": 0,
             "Last Analysis": "Never", "Abuse Score": 0, "VT Hits": 0, "Lat": 20.0, "Lon": 0.0
         }
 
-        # API Logic - AbuseIPDB
+        # AbuseIPDB API
         if st.session_state["AbuseIPDB_key"]:
             try:
                 r = requests.get("https://api.abuseipdb.com/api/v2/check", headers={"Key": st.session_state["AbuseIPDB_key"], "Accept":"application/json"}, params={"ipAddress": ip}).json()
@@ -133,7 +140,7 @@ if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
                 intel["Lat"], intel["Lon"] = data.get('latitude'), data.get('longitude')
             except: pass
 
-        # API Logic - VirusTotal
+        # VirusTotal API
         if st.session_state["VirusTotal_key"]:
             try:
                 r = requests.get(f"https://www.virustotal.com/api/v3/ip_addresses/{ip}", headers={"x-apikey": st.session_state["VirusTotal_key"]}).json()
