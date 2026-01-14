@@ -100,8 +100,8 @@ st.session_state.setdefault("scan_results", None)
 st.session_state.setdefault("uploaded_file", None)
 
 # ================= PAGE =================
-st.set_page_config("ViperIntel Pro", "🛡️", layout="wide")
-st.title("🛡️ ViperIntel Pro")
+st.set_page_config("ViperIntel Pro", "🐍", layout="wide")
+st.title("🐍 ViperIntel Pro")
 st.markdown("### Universal Threat Intelligence & Forensic Aggregator")
 
 # ================= SIDEBAR =================
