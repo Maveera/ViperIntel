@@ -43,7 +43,7 @@ def audit(action):
         f.write(f"{datetime.utcnow().isoformat()}Z | {action}\n")
 
 # ==================================================
-# MITRE ATT&CK MAP (EXTENDED)
+# MITRE ATT&CK MAP
 # ==================================================
 MITRE_MAP = {
     "AbuseIPDB": {
@@ -66,7 +66,6 @@ MITRE_MAP = {
 ALL_TI_ENGINES = ["AbuseIPDB", "VirusTotal"]
 SUPPORTED_TI = ["AbuseIPDB", "VirusTotal"]
 DEFAULT_ACTIVE = ["AbuseIPDB", "VirusTotal"]
-
 MAX_RPS = 4
 
 # ==================================================
@@ -140,7 +139,7 @@ st.session_state.setdefault("uploaded_file", None)
 # ==================================================
 # PAGE
 # ==================================================
-st.set_page_config(page_title="ViperIntel Pro", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="ViperIntel Pro", page_icon="🐍", layout="wide")
 st.title("🛡️ ViperIntel Pro")
 st.markdown("### Universal Threat Intelligence & Forensic Aggregator")
 
@@ -227,7 +226,6 @@ def scan_ip(ip):
 
     intel["Risk Score"] = min(100, int(intel["Abuse Score"] * 0.6 + intel["VT Hits"] * 10))
 
-    # ✅ Confidence Bands (NEW)
     if intel["Risk Score"] >= 70:
         intel["Confidence"] = "High"
     elif intel["Risk Score"] >= 30:
@@ -253,7 +251,6 @@ if st.button("⚡ EXECUTE DEEP SCAN"):
         st.stop()
 
     raw_values = df.iloc[:, 0].astype(str).tolist()
-
     expanded = []
     for v in raw_values:
         expanded.extend(expand_ip(v.strip()))
@@ -270,14 +267,11 @@ if st.button("⚡ EXECUTE DEEP SCAN"):
     with st.spinner("🔍 Scanning with rate limiting..."):
         with ThreadPoolExecutor(max_workers=MAX_RPS) as executor:
             futures = [executor.submit(scan_ip, ip) for ip in ips]
-
             for future in as_completed(futures):
                 intel = future.result()
                 results.append(intel)
-
                 if intel["MITRE Technique"]:
                     mitre_count[intel["MITRE Technique"]] = mitre_count.get(intel["MITRE Technique"], 0) + 1
-
                 time.sleep(1 / MAX_RPS)
 
     st.session_state.scan_results = pd.DataFrame(results)
@@ -285,7 +279,7 @@ if st.button("⚡ EXECUTE DEEP SCAN"):
     st.success("Scan completed.")
 
 # ==================================================
-# RESULTS
+# RESULTS + STIX EXPORT
 # ==================================================
 if st.session_state.scan_results is not None:
     st.subheader("📋 Intelligence Report")
@@ -297,9 +291,7 @@ if st.session_state.scan_results is not None:
     )
     st.dataframe(heatmap_df, use_container_width=True)
 
-    # ==================================================
-    # STIX EXPORT (UNCHANGED)
-    # ==================================================
+    # -------- STIX 2.1 EXPORT (FIXED) --------
     stix_bundle = {
         "type": "bundle",
         "id": f"bundle--{uuid.uuid4()}",
@@ -308,12 +300,23 @@ if st.session_state.scan_results is not None:
     }
 
     for _, row in st.session_state.scan_results.iterrows():
-        stix_bundle["objects"].append({
-            "type": "indicator",
-            "spec_version": "2.1",
-            "id": f"indicator--{uuid.uuid4()}",
-            "created": datetime.utcnow().isoformat() + "Z",
-            "modified": datetime.utcnow().isoformat() + "Z",
-            "name": f"Malicious IP {row['IP']}",
-            "pattern": f"[ipv4-addr:value = '{row['IP']}']",
-            "confidence":
+        stix_bundle["objects"].append(
+            {
+                "type": "indicator",
+                "spec_version": "2.1",
+                "id": f"indicator--{uuid.uuid4()}",
+                "created": datetime.utcnow().isoformat() + "Z",
+                "modified": datetime.utcnow().isoformat() + "Z",
+                "name": f"Malicious IP {row['IP']}",
+                "pattern": f"[ipv4-addr:value = '{row['IP']}']",
+                "confidence": int(row["Risk Score"]),
+                "labels": ["malicious-activity"]
+            }
+        )
+
+    st.download_button(
+        "📥 Download STIX 2.1 IOCs",
+        data=json.dumps(stix_bundle, indent=2),
+        file_name="viperintel_iocs_stix2.json",
+        mime="application/json"
+    )
