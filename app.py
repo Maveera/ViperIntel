@@ -54,15 +54,36 @@ with st.sidebar:
     st.divider()
     st.subheader("🔑 Global API Configuration")
 
-    # -------- IMAGE-2 STYLE API FIELD --------
+    # -------- FIXED API INPUT (EDIT → SAVE FLOW) --------
     def api_input(label, engine):
-        if not st.session_state[f"{engine}_locked"]:
-            val = st.text_input(label, type="password", key=f"inp_{engine}")
-            if val:
-                st.session_state[f"{engine}_key"] = val
-                st.session_state[f"{engine}_locked"] = True
-                st.rerun()
+        key_name = f"{engine}_key"
+        lock_name = f"{engine}_locked"
+
+        if not st.session_state[lock_name]:
+            # Editable state
+            st.markdown(f"**{label}**")
+            new_val = st.text_input(
+                "Enter API Key",
+                type="password",
+                value=st.session_state[key_name],
+                key=f"inp_{engine}",
+                label_visibility="collapsed"
+            )
+
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                if st.button("💾 Save", key=f"save_{engine}"):
+                    st.session_state[key_name] = new_val
+                    st.session_state[lock_name] = True
+                    st.rerun()
+
+            with col2:
+                if st.button("❌ Cancel", key=f"cancel_{engine}"):
+                    st.session_state[lock_name] = True
+                    st.rerun()
+
         else:
+            # Locked (Image-2 UI)
             st.markdown(f"**{label}**")
 
             components.html(
@@ -78,13 +99,7 @@ with st.sidebar:
                     align-items: center;
                     padding: 0 16px;
                     box-sizing: border-box;
-                    transition: border 0.2s, box-shadow 0.2s;
                     font-family: monospace;
-                }}
-
-                .api-field:focus-within {{
-                    border-color: #4da3ff;
-                    box-shadow: 0 0 0 2px rgba(77,163,255,0.45);
                 }}
 
                 .api-dots {{
@@ -99,15 +114,10 @@ with st.sidebar:
                     color: #4da3ff;
                     font-weight: 600;
                     cursor: pointer;
-                    user-select: none;
-                }}
-
-                .api-edit:hover {{
-                    text-decoration: underline;
                 }}
                 </style>
 
-                <div class="api-field" tabindex="0">
+                <div class="api-field">
                     <div class="api-dots">••••••••••••••••••••</div>
                     <div class="api-edit"
                         onclick="window.location.search='?edit={engine}'">
@@ -115,14 +125,14 @@ with st.sidebar:
                     </div>
                 </div>
                 """,
-                height=70
+                height=65
             )
 
             if st.query_params.get("edit") == engine:
-                st.session_state[f"{engine}_locked"] = False
+                st.session_state[lock_name] = False
                 st.query_params.clear()
                 st.rerun()
-    # ----------------------------------------
+    # --------------------------------------------------
 
     for eng in primary_engines:
         api_input(f"{eng} Key", eng)
@@ -170,34 +180,6 @@ if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
 
     st.session_state.scan_results = pd.DataFrame(results)
     status.empty()
-
-# ---------------- RESULTS ----------------
-if st.session_state.scan_results is not None:
-    df = st.session_state.scan_results
-    df.index += 1
-    df.index.name = "S.No"
-
-    st.subheader("🌐 Geographic Threat Origin")
-    m = folium.Map(location=[20, 0], zoom_start=2, tiles="CartoDB dark_matter")
-
-    for _, r in df.iterrows():
-        folium.CircleMarker(
-            [r["Lat"], r["Lon"]],
-            radius=7,
-            color="#00ffcc",
-            fill=True
-        ).add_to(m)
-
-    st_folium(m, width=1200, height=500)
-
-    st.subheader("📋 Detailed Intelligence Report")
-    st.dataframe(df.drop(columns=["Lat", "Lon"]), use_container_width=True)
-
-    st.download_button(
-        "📥 DOWNLOAD CSV",
-        df.to_csv(index=True).encode(),
-        "ViperIntel_Report.csv"
-    )
 
 # ---------------- FOOTER ----------------
 st.markdown("""
