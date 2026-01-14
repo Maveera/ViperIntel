@@ -5,58 +5,31 @@ import time
 import folium
 from streamlit_folium import st_folium
 
-# ---------------- PAGE CONFIG ----------------
+# ================= PAGE CONFIG =================
 st.set_page_config(
-    page_title="ViperIntel Pro | By Maveera",
+    page_title="ViperIntel Pro",
     page_icon="🛡️",
     layout="wide"
 )
 
-# ---------------- GLOBAL TI CATALOG ----------------
+# ================= GLOBAL TI CATALOG =================
 ALL_TI_ENGINES = [
-    # Reputation / Abuse
     "AbuseIPDB",
+    "VirusTotal",
+    "AlienVault OTX",
     "IPQualityScore",
     "GreyNoise",
     "Spamhaus",
-    "Project Honey Pot",
-    "IPInfo",
-    "MaxMind",
-    "Spur.us",
-
-    # Malware / IOC
-    "VirusTotal",
-    "Hybrid Analysis",
-    "MalwareBazaar",
-    "Any.Run",
-    "Joe Sandbox",
-
-    # Open Feeds
-    "AlienVault OTX",
-    "MISP",
-    "OpenPhish",
-    "PhishTank",
-    "URLhaus",
-    "CIRCL",
-
-    # Enterprise TI
     "Recorded Future",
     "Cisco Talos",
-    "IBM X-Force",
-    "Microsoft Defender TI",
-    "CrowdStrike Falcon",
-    "Kaspersky TI",
-    "Check Point ThreatCloud"
+    "IBM X-Force"
 ]
 
-# APIs actually implemented
 SUPPORTED_TI = ["AbuseIPDB", "VirusTotal"]
 
-MAX_VISIBLE_TI = 3
-
-# ---------------- SESSION STATE ----------------
-if "active_ti" not in st.session_state:
-    st.session_state.active_ti = ALL_TI_ENGINES[:MAX_VISIBLE_TI]
+# ================= SESSION STATE =================
+st.session_state.setdefault("active_ti", ALL_TI_ENGINES[:3])
+st.session_state.setdefault("inactive_ti", ALL_TI_ENGINES[3:])
 
 for ti in ALL_TI_ENGINES:
     st.session_state.setdefault(f"{ti}_key", "")
@@ -64,20 +37,24 @@ for ti in ALL_TI_ENGINES:
 
 st.session_state.setdefault("scan_results", None)
 
-# ---------------- STYLES ----------------
+# ================= STYLES =================
 st.markdown("""
 <style>
 .stApp { background-color: #0a0e14; color: #e0e6ed; }
 footer { visibility: hidden; }
 
-.key-freeze-row {
-    background: rgba(255,255,255,0.05);
-    border: 1px solid rgba(255,255,255,0.1);
-    border-radius: 8px;
-    padding: 8px;
-    color: #8b949e;
-    letter-spacing: 2px;
+.key-box {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 12px;
+}
+
+.key-mask {
     font-family: monospace;
+    letter-spacing: 3px;
+    color: #9aa4b2;
 }
 
 .custom-footer {
@@ -95,48 +72,73 @@ footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------- HEADER ----------------
+# ================= HEADER =================
 st.title("🛡️ ViperIntel Pro")
 st.markdown("#### Universal Threat Intelligence & Forensic Aggregator")
 
-# ---------------- SIDEBAR ----------------
+# ================= SIDEBAR =================
 with st.sidebar:
-    st.markdown("## 🛡️ TI Command Center")
     st.subheader("🔑 Global API Configuration")
 
-    def api_input(ti):
-        if not st.session_state[f"{ti}_locked"]:
-            val = st.text_input(f"{ti} Key", type="password", key=f"inp_{ti}")
-            if val:
-                st.session_state[f"{ti}_key"] = val
-                st.session_state[f"{ti}_locked"] = True
-                st.rerun()
-        else:
-            col_mask, col_edit = st.columns([3, 1])
-            with col_mask:
-                st.markdown("<div class='key-freeze-row'>••••••••••••••••</div>", unsafe_allow_html=True)
-            with col_edit:
+    # -------- TI BLOCK --------
+    def ti_block(ti):
+        with st.container():
+            st.markdown('<div class="key-box">', unsafe_allow_html=True)
+
+            # SHOW LABEL ONLY IF KEY IS EMPTY
+            if not st.session_state[f"{ti}_key"]:
+                st.markdown(f"**{ti} Key**")
+
+            # EDIT MODE
+            if not st.session_state[f"{ti}_locked"]:
+                val = st.text_input(
+                    "",
+                    type="password",
+                    key=f"input_{ti}",
+                    placeholder=f"Enter {ti} API Key",
+                    label_visibility="collapsed"
+                )
+                if val:
+                    st.session_state[f"{ti}_key"] = val
+                    st.session_state[f"{ti}_locked"] = True
+                    st.rerun()
+
+            # LOCKED MODE
+            else:
+                st.markdown('<div class="key-mask">••••••••••••••••</div>', unsafe_allow_html=True)
+
                 if st.button("Edit", key=f"edit_{ti}"):
                     st.session_state[f"{ti}_locked"] = False
                     st.rerun()
 
-    # Show active TI (max 3)
-    for ti in st.session_state.active_ti:
-        api_input(ti)
+            # REMOVE TI
+            if st.button("Remove", key=f"remove_{ti}"):
+                st.session_state.active_ti.remove(ti)
+                st.session_state.inactive_ti.append(ti)
+                st.rerun()
 
-    # Add more TI
-    remaining_ti = [ti for ti in ALL_TI_ENGINES if ti not in st.session_state.active_ti]
-    if remaining_ti:
+            st.markdown('</div>', unsafe_allow_html=True)
+
+    # -------- ACTIVE TI --------
+    for ti in st.session_state.active_ti:
+        ti_block(ti)
+
+    # -------- ADD TI BACK --------
+    if st.session_state.inactive_ti:
         st.divider()
-        add_ti = st.selectbox("➕ Add Threat Intelligence Source", ["Select TI"] + remaining_ti)
+        add_ti = st.selectbox(
+            "➕ Add Threat Intelligence Source",
+            ["Select TI"] + st.session_state.inactive_ti
+        )
         if add_ti != "Select TI":
+            st.session_state.inactive_ti.remove(add_ti)
             st.session_state.active_ti.append(add_ti)
             st.rerun()
 
-# ---------------- FILE UPLOAD ----------------
+# ================= FILE UPLOAD =================
 uploaded_file = st.file_uploader("Upload CSV (IPs in first column)", type=["csv"])
 
-# ---------------- EXECUTE SCAN ----------------
+# ================= EXECUTE SCAN =================
 if st.button("⚡ EXECUTE DEEP SCAN"):
     active_supported = [
         ti for ti in st.session_state.active_ti
@@ -144,20 +146,17 @@ if st.button("⚡ EXECUTE DEEP SCAN"):
     ]
 
     if not active_supported:
-        st.error("❌ No supported TI API configured. Add at least one valid API (AbuseIPDB or VirusTotal).")
+        st.error("❌ At least one supported TI API (AbuseIPDB / VirusTotal) is required.")
     elif not uploaded_file:
-        st.error("❌ Please upload a CSV file with IP addresses.")
+        st.error("❌ Please upload a CSV file.")
     else:
         df = pd.read_csv(uploaded_file, header=None)
-        ips = df.iloc[:, 0].astype(str).str.strip().tolist()
+        ips = df.iloc[:, 0].astype(str).tolist()
 
         results = []
         progress = st.progress(0)
-        status = st.empty()
 
         for i, ip in enumerate(ips):
-            status.markdown(f"🔍 **Analyzing:** `{ip}` ({i+1}/{len(ips)})")
-
             intel = {
                 "IP": ip,
                 "Status": "Clean",
@@ -197,12 +196,11 @@ if st.button("⚡ EXECUTE DEEP SCAN"):
 
             results.append(intel)
             progress.progress((i + 1) / len(ips))
-            time.sleep(0.1)
+            time.sleep(0.05)
 
         st.session_state.scan_results = pd.DataFrame(results)
-        status.empty()
 
-# ---------------- RESULTS ----------------
+# ================= RESULTS =================
 if st.session_state.scan_results is not None:
     res = st.session_state.scan_results.copy()
     res.index = res.index + 1
@@ -223,7 +221,7 @@ if st.session_state.scan_results is not None:
             ).add_to(m)
     st_folium(m, width=1200, height=450)
 
-# ---------------- FOOTER ----------------
+# ================= FOOTER =================
 st.markdown("""
 <div class="custom-footer">
 © 2026 <b>ViperIntel Pro</b> | All Rights Reserved
