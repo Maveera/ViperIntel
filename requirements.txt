@@ -1,5 +1,5 @@
-streamlit
-aiohttp
-pandas
-folium
-streamlit-folium
+streamlit>=1.32.0
+aiohttp>=3.9.0
+pandas>=2.0.0
+folium>=0.15.0
+streamlit-folium>=0.18.0
