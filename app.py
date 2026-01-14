@@ -63,7 +63,6 @@ with st.sidebar:
     st.divider()
     st.subheader("🔑 Global API Configuration")
 
-    # -------- PERFECTLY ALIGNED API INPUT --------
     def api_input(label, engine):
         if not st.session_state[f"{engine}_locked"]:
             val = st.text_input(label, type="password", key=f"inp_{engine}")
@@ -99,12 +98,10 @@ with st.sidebar:
             """
             st.markdown(html, unsafe_allow_html=True)
 
-            # Handle Edit click
             if st.query_params.get("edit") == engine:
                 st.session_state[f"{engine}_locked"] = False
                 st.query_params.clear()
                 st.rerun()
-    # --------------------------------------------
 
     for eng in primary_engines:
         api_input(f"{eng} Key", eng)
@@ -160,4 +157,35 @@ if st.session_state.scan_results is not None:
     df.index.name = "S.No"
 
     st.subheader("🌐 Geographic Threat Origin")
-    m = folium.Map(locat
+    m = folium.Map(
+        location=[20, 0],
+        zoom_start=2,
+        tiles="CartoDB dark_matter"
+    )
+
+    for _, r in df.iterrows():
+        folium.CircleMarker(
+            [r["Lat"], r["Lon"]],
+            radius=7,
+            color="#00ffcc",
+            fill=True
+        ).add_to(m)
+
+    st_folium(m, width=1200, height=500)
+
+    st.subheader("📋 Detailed Intelligence Report")
+    st.dataframe(df.drop(columns=["Lat", "Lon"]), use_container_width=True)
+
+    st.download_button(
+        "📥 DOWNLOAD CSV",
+        df.to_csv(index=True).encode(),
+        "ViperIntel_Report.csv"
+    )
+
+# ---------------- FOOTER ----------------
+st.markdown("""
+<div style="text-align:center;padding:20px;color:#666;">
+© 2026 ViperIntel Pro | Developed by
+<a href="https://maveera.tech" target="_blank" style="color:#00ffcc;">Maveera</a>
+</div>
+""", unsafe_allow_html=True)
