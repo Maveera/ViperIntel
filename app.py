@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import asyncio
-import aiohttp
 import ipaddress
 from datetime import datetime
 
@@ -36,7 +35,7 @@ def valid_ip(ip: str) -> bool:
         return False
 
 # =========================
-# API KEY INPUT (FINAL, STABLE FIX)
+# API KEY INPUT (FINAL FIX)
 # =========================
 def api_input(engine: str):
     key_name = f"{engine}_key"
@@ -44,24 +43,30 @@ def api_input(engine: str):
 
     st.markdown(f"**{engine} Key**")
 
-    # ---- EDIT MODE ----
+    # SAME layout for BOTH modes → NO width mismatch
+    col_key, col_btn = st.columns([6, 2], gap="small")
+
+    # ---------- EDIT MODE ----------
     if not st.session_state[lock_name]:
-        value = st.text_input(
-            "",
-            type="password",
-            key=f"input_{engine}",
-            placeholder=f"Enter {engine} API Key",
-            label_visibility="collapsed"
-        )
+        with col_key:
+            value = st.text_input(
+                "",
+                type="password",
+                key=f"input_{engine}",
+                placeholder=f"Enter {engine} API Key",
+                label_visibility="collapsed"
+            )
+
+        with col_btn:
+            st.empty()  # keeps column width identical
+
         if value:
             st.session_state[key_name] = value
             st.session_state[lock_name] = True
             st.rerun()
 
-    # ---- LOCKED MODE (INLINE, NON-STACKING) ----
+    # ---------- LOCKED MODE ----------
     else:
-        col_key, col_btn = st.columns([6, 2], gap="small")
-
         with col_key:
             st.text_input(
                 "",
@@ -103,7 +108,6 @@ uploaded = st.file_uploader("Upload CSV (IPs in first column)", type=["csv"])
 # ASYNC SCAN (SIMPLE PLACEHOLDER)
 # =========================
 async def enrich_ip(ip: str):
-    # Replace with real async TI calls
     await asyncio.sleep(0)
     return {
         "IP": ip,
