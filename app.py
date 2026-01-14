@@ -323,9 +323,10 @@ st.markdown(
         align-items: center;
         justify-content: center;
         text-align: center;
-        padding: 12px 10px;
+        padding: 14px 12px;
         color: #94a3b8;
-        font-size: 14px;
+        font-size: 15.5px;   /* 🔼 increased from ~14px */
+        line-height: 1.4;
         gap: 4px;
     }
 
@@ -337,8 +338,8 @@ st.markdown(
 
     @media (max-width: 768px) {
         .viper-footer-content {
-            font-size: 13px;
-            padding: 10px 6px;
+            font-size: 14.5px;  /* 🔼 slightly larger on mobile */
+            padding: 12px 8px;
         }
     }
     </style>
@@ -355,3 +356,4 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
