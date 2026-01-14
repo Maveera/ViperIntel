@@ -4,6 +4,8 @@ import aiohttp
 import asyncio
 import ipaddress
 import folium
+import hashlib
+import json
 from datetime import datetime
 from streamlit_folium import st_folium
 
@@ -19,24 +21,13 @@ st.set_page_config(
 # =========================
 # SESSION STATE
 # =========================
-ENGINES = ["AbuseIPDB", "VirusTotal"]
+ENGINES = ["AbuseIPDB", "VirusTotal", "AlienVaultOTX", "IPQualityScore"]
 for e in ENGINES:
     st.session_state.setdefault(f"{e}_key", "")
     st.session_state.setdefault(f"{e}_locked", False)
 
 st.session_state.setdefault("scan_results", None)
-
-# =========================
-# STYLES (UNCHANGED)
-# =========================
-st.markdown("""
-<style>
-.stApp { background-color:#0a0e14; color:#e0e6ed; }
-footer { visibility:hidden; }
-.metric-card { background:#161b22; padding:20px; border-radius:10px; border:1px solid #1f2937; text-align:center; }
-.key-freeze-row { background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); border-radius:8px; padding:8px; font-family:monospace; }
-</style>
-""", unsafe_allow_html=True)
+st.session_state.setdefault("history", {})
 
 # =========================
 # UTILITIES
@@ -48,31 +39,47 @@ def valid_ip(ip):
     except:
         return False
 
+def fingerprint(ip):
+    return hashlib.sha256(ip.encode()).hexdigest()
+
 # =========================
-# RISK SCORING MODEL
+# RISK MODEL
 # =========================
 ENGINE_WEIGHTS = {
-    "AbuseIPDB": 0.6,
-    "VirusTotal": 0.8
+    "AbuseIPDB": 0.4,
+    "VirusTotal": 0.5,
+    "AlienVaultOTX": 0.3,
+    "IPQualityScore": 0.4
 }
 
-def calculate_risk(abuse, vt):
+def calculate_risk(intel):
     score = 0
     reasons = []
 
-    if abuse >= 25:
-        score += abuse * ENGINE_WEIGHTS["AbuseIPDB"]
+    if intel["Abuse Score"] >= 25:
+        score += intel["Abuse Score"] * ENGINE_WEIGHTS["AbuseIPDB"]
         reasons.append("AbuseIPDB confidence")
 
-    if vt > 0:
+    if intel["VT Hits"] > 0:
         score += 100 * ENGINE_WEIGHTS["VirusTotal"]
         reasons.append("VirusTotal detections")
 
-    score = min(int(score), 100)
-    return score, reasons
+    if intel["OTX Pulses"] > 0:
+        score += 60 * ENGINE_WEIGHTS["AlienVaultOTX"]
+        reasons.append("OTX pulse association")
+
+    if intel["IPQS Fraud Score"] >= 75:
+        score += intel["IPQS Fraud Score"] * ENGINE_WEIGHTS["IPQualityScore"]
+        reasons.append("IPQS high fraud score")
+
+    if intel["Seen Before"]:
+        score += 15
+        reasons.append("Previously observed IOC")
+
+    return min(int(score), 100), reasons
 
 # =========================
-# MITRE ATT&CK MAPPING
+# MITRE ATT&CK
 # =========================
 def mitre_mapping(intel):
     techniques = []
@@ -83,28 +90,49 @@ def mitre_mapping(intel):
     if intel["VT Hits"] > 0:
         techniques.append(("T1071", "Application Layer Protocol"))
 
+    if intel["OTX Pulses"] > 0:
+        techniques.append(("T1098", "Account Manipulation"))
+
+    if intel["IPQS Fraud Score"] >= 75:
+        techniques.append(("T1587", "Malware Development / Infrastructure Abuse"))
+
     return techniques
 
 # =========================
-# ASYNC ENRICHMENT
+# ASYNC LOOKUPS
 # =========================
-async def abuseipdb_lookup(session, ip, key):
+async def abuseipdb(session, ip, key):
     url = "https://api.abuseipdb.com/api/v2/check"
     headers = {"Key": key, "Accept": "application/json"}
     params = {"ipAddress": ip}
     async with session.get(url, headers=headers, params=params) as r:
-        js = await r.json()
-        return js.get("data", {})
+        return (await r.json()).get("data", {})
 
-async def virustotal_lookup(session, ip, key):
+async def virustotal(session, ip, key):
     url = f"https://www.virustotal.com/api/v3/ip_addresses/{ip}"
     headers = {"x-apikey": key}
     async with session.get(url, headers=headers) as r:
-        js = await r.json()
-        return js.get("data", {}).get("attributes", {})
+        return (await r.json()).get("data", {}).get("attributes", {})
 
+async def otx(session, ip, key):
+    url = f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general"
+    headers = {"X-OTX-API-KEY": key}
+    async with session.get(url, headers=headers) as r:
+        return await r.json()
+
+async def ipqs(session, ip, key):
+    url = f"https://ipqualityscore.com/api/json/ip/{key}/{ip}"
+    async with session.get(url) as r:
+        return await r.json()
+
+# =========================
+# ASYNC ENRICHMENT
+# =========================
 async def enrich_ip(ip, keys, sem):
     async with sem:
+        fp = fingerprint(ip)
+        seen_before = fp in st.session_state.history
+
         intel = {
             "IP": ip,
             "Status": "Clean",
@@ -112,10 +140,13 @@ async def enrich_ip(ip, keys, sem):
             "ISP": "Unknown",
             "Abuse Score": 0,
             "VT Hits": 0,
+            "OTX Pulses": 0,
+            "IPQS Fraud Score": 0,
             "Confidence": 0,
             "Correlation": "None",
             "MITRE Techniques": [],
-            "Timeline": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "Seen Before": seen_before,
+            "Timeline": datetime.utcnow().isoformat() + "Z",
             "Lat": None,
             "Lon": None
         }
@@ -123,7 +154,7 @@ async def enrich_ip(ip, keys, sem):
         async with aiohttp.ClientSession() as session:
             if keys["AbuseIPDB"]:
                 try:
-                    d = await abuseipdb_lookup(session, ip, keys["AbuseIPDB"])
+                    d = await abuseipdb(session, ip, keys["AbuseIPDB"])
                     intel["Abuse Score"] = d.get("abuseConfidenceScore", 0)
                     intel["Country"] = d.get("countryName", "Unknown")
                     intel["ISP"] = d.get("isp", "Unknown")
@@ -134,23 +165,46 @@ async def enrich_ip(ip, keys, sem):
 
             if keys["VirusTotal"]:
                 try:
-                    v = await virustotal_lookup(session, ip, keys["VirusTotal"])
+                    v = await virustotal(session, ip, keys["VirusTotal"])
                     intel["VT Hits"] = v.get("last_analysis_stats", {}).get("malicious", 0)
                 except:
                     pass
 
-        intel["Confidence"], reasons = calculate_risk(intel["Abuse Score"], intel["VT Hits"])
+            if keys["AlienVaultOTX"]:
+                try:
+                    o = await otx(session, ip, keys["AlienVaultOTX"])
+                    intel["OTX Pulses"] = len(o.get("pulse_info", {}).get("pulses", []))
+                except:
+                    pass
 
-        if intel["Abuse Score"] > 0 and intel["VT Hits"] > 0:
-            intel["Correlation"] = "High (Multi-engine agreement)"
-        elif intel["Abuse Score"] > 0 or intel["VT Hits"] > 0:
-            intel["Correlation"] = "Medium (Single-engine)"
+            if keys["IPQualityScore"]:
+                try:
+                    q = await ipqs(session, ip, keys["IPQualityScore"])
+                    intel["IPQS Fraud Score"] = q.get("fraud_score", 0)
+                except:
+                    pass
 
+        intel["Confidence"], reasons = calculate_risk(intel)
         intel["MITRE Techniques"] = mitre_mapping(intel)
+
+        engines_triggered = sum([
+            intel["Abuse Score"] > 0,
+            intel["VT Hits"] > 0,
+            intel["OTX Pulses"] > 0,
+            intel["IPQS Fraud Score"] >= 75
+        ])
+
+        if engines_triggered >= 3:
+            intel["Correlation"] = "High (Multi-engine agreement)"
+        elif engines_triggered == 2:
+            intel["Correlation"] = "Medium"
+        elif engines_triggered == 1:
+            intel["Correlation"] = "Low"
 
         if intel["Confidence"] >= 50:
             intel["Status"] = "🚨 Malicious"
 
+        st.session_state.history[fp] = intel["Timeline"]
         return intel
 
 async def run_scan(ips, keys):
@@ -175,21 +229,20 @@ with st.sidebar:
                 st.rerun()
         else:
             st.markdown(f"**{e} Key**")
-            st.markdown("<div class='key-freeze-row'>••••••••••••••</div>", unsafe_allow_html=True)
+            st.markdown("••••••••••••••")
             if st.button(f"Edit {e}"):
                 st.session_state[f"{e}_locked"] = False
                 st.rerun()
 
 uploaded = st.file_uploader("Upload CSV (IPs in first column)", type=["csv"])
 
-if st.button("⚡ EXECUTE ASYNC SCAN") and uploaded:
+if st.button("⚡ EXECUTE FULL ASYNC SCAN") and uploaded:
     df = pd.read_csv(uploaded, header=None)
-    raw_ips = df.iloc[:,0].astype(str).tolist()
-    ips = [ip for ip in raw_ips if valid_ip(ip)]
+    ips = [ip for ip in df.iloc[:,0].astype(str).tolist() if valid_ip(ip)]
 
     keys = {e: st.session_state[f"{e}_key"] for e in ENGINES}
 
-    with st.spinner("Running async enrichment..."):
+    with st.spinner("Running async SOC enrichment…"):
         results = asyncio.run(run_scan(ips, keys))
 
     st.session_state.scan_results = pd.DataFrame(results)
@@ -200,13 +253,11 @@ if st.button("⚡ EXECUTE ASYNC SCAN") and uploaded:
 if st.session_state.scan_results is not None:
     res = st.session_state.scan_results
 
-    c1,c2,c3 = st.columns(3)
-    c1.markdown(f"<div class='metric-card'><b>Total IPs</b><h2>{len(res)}</h2></div>", unsafe_allow_html=True)
-    c2.markdown(f"<div class='metric-card'><b>Malicious</b><h2 style='color:red'>{len(res[res['Status']!='Clean'])}</h2></div>", unsafe_allow_html=True)
-    c3.markdown(f"<div class='metric-card'><b>Clean</b><h2>{len(res[res['Status']=='Clean'])}</h2></div>", unsafe_allow_html=True)
+    st.subheader("📊 Results")
+    st.dataframe(res, use_container_width=True)
 
     st.subheader("🌍 Threat Map")
-    fmap = folium.Map(location=[20,0], zoom_start=2, tiles="CartoDB dark_matter")
+    m = folium.Map(location=[20,0], zoom_start=2, tiles="CartoDB dark_matter")
     for _, r in res.iterrows():
         if r["Lat"] and r["Lon"]:
             folium.CircleMarker(
@@ -214,13 +265,10 @@ if st.session_state.scan_results is not None:
                 radius=7,
                 color="red" if r["Status"]!="Clean" else "#00ffcc",
                 fill=True
-            ).add_to(fmap)
-    st_folium(fmap, width=1200, height=450)
+            ).add_to(m)
+    st_folium(m, width=1200, height=450)
 
-    st.subheader("📋 Intelligence Report")
-    st.dataframe(res, use_container_width=True)
-
-    st.subheader("🧠 MITRE ATT&CK Mapping")
+    st.subheader("🧠 MITRE ATT&CK")
     for _, r in res.iterrows():
         with st.expander(f"{r['IP']} | {r['Status']} | Confidence {r['Confidence']}%"):
             if r["MITRE Techniques"]:
@@ -228,3 +276,10 @@ if st.session_state.scan_results is not None:
                     st.markdown(f"- **{t[0]}** — {t[1]}")
             else:
                 st.markdown("No ATT&CK techniques inferred.")
+
+    st.download_button(
+        "📥 DOWNLOAD SIEM JSON",
+        data="\n".join(res.to_json(orient="records", lines=True)),
+        file_name="ViperIntel_SIEM.json",
+        mime="application/json"
+    )
