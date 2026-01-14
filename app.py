@@ -9,7 +9,7 @@ from streamlit_folium import st_folium
 st.set_page_config(page_title="ViperIntel Pro | By Maveera", page_icon="🛡️", layout="wide")
 
 # --- Session State Management ---
-# Expanded global engines list
+# Expanded global engines list for a complete TI profile
 engines = ["AbuseIPDB", "VirusTotal", "AlienVault OTX", "IPQualityScore", "ThreatFox", "Shodan", "GreyNoise", "CriminalIP"]
 for e in engines:
     if f"{e}_key" not in st.session_state: st.session_state[f"{e}_key"] = ""
@@ -35,18 +35,27 @@ st.markdown("""
         box-shadow: 0px 0px 15px #00ffcc;
     }
 
-    /* Key Freeze Box Styling */
-    .key-freeze-box {
-        background-color: #1e2530;
-        border: 1px solid #30363d;
-        border-radius: 8px;
-        padding: 10px;
+    /* Professional Reset Button */
+    .stButton > button[kind="secondary"] {
+        background-color: transparent !important;
+        color: #ff4b4b !important;
+        border: 1px solid #ff4b4b !important;
+        border-radius: 6px !important;
+    }
+
+    /* Live Key Freeze Container */
+    .key-freeze-container {
+        background-color: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        padding: 10px 15px;
         display: flex;
         justify-content: space-between;
         align-items: center;
         margin-bottom: 10px;
     }
-    .masked-key { color: #8b949e; font-family: monospace; letter-spacing: 2px; }
+    .masked-dots { color: #8b949e; font-size: 20px; letter-spacing: 3px; line-height: 1; }
+    .edit-link { color: #58a6ff; font-weight: bold; cursor: pointer; text-decoration: none; font-size: 14px; }
     
     .metric-card { background: #161b22; padding: 20px; border-radius: 10px; border: 1px solid #1f2937; text-align: center; }
     </style>
@@ -71,29 +80,33 @@ with st.sidebar:
     st.divider()
     st.subheader("🔑 Global API Configuration")
 
+    # API Input Function with Live Key Freeze Logic
     def api_input(label, session_key):
         if not st.session_state[f"{session_key}_locked"]:
-            # Input field that freezes on 'Enter'
+            # Standard input field
             val = st.text_input(label, type="password", key=f"inp_{session_key}")
-            if val:
+            if val: # Triggered on hitting 'Enter'
                 st.session_state[f"{session_key}_key"] = val
                 st.session_state[f"{session_key}_locked"] = True
                 st.rerun()
         else:
-            # Live Key Freeze UI
+            # Locked state display
             st.markdown(f"**{label}**")
-            c_box, c_btn = st.columns([4, 1])
-            with c_box:
-                st.markdown(f'<div class="key-freeze-box"><span class="masked-key">••••••••••••••••••••</span></div>', unsafe_allow_html=True)
-            with c_btn:
-                if st.button("Edit", key=f"edit_{session_key}"):
-                    st.session_state[f"{session_key}_locked"] = False
-                    st.rerun()
+            st.markdown(f"""
+                <div class="key-freeze-container">
+                    <span class="masked-dots">••••••••••••••••••••••••••••••</span>
+                </div>
+            """, unsafe_allow_html=True)
+            # Small inline button to trigger edit
+            if st.button("Edit", key=f"btn_edit_{session_key}", help="Unlock API Key"):
+                st.session_state[f"{session_key}_locked"] = False
+                st.rerun()
 
-    # Show primary 3 and hide the rest in an expander as requested
+    # Show top 3 by default
     for engine in engines[:3]:
         api_input(f"{engine} Key", engine)
     
+    # Hide others in search dropdown
     with st.expander("🔍 Search More Engines"):
         search_engine = st.selectbox("Select Provider", [""] + engines[3:])
         if search_engine:
@@ -106,7 +119,7 @@ with st.sidebar:
 uploaded_file = st.file_uploader("Upload CSV (IPs in first column)", type=["csv"])
 
 if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
-    # Read CSV without header to ensure Row 1 (8.8.8.8) is scanned
+    # Read CSV without header to scan Row 1 (e.g., 8.8.8.8)
     df_raw = pd.read_csv(uploaded_file, header=None)
     ips = df_raw.iloc[:, 0].astype(str).str.strip().tolist()
     
@@ -117,14 +130,14 @@ if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
     for i, ip in enumerate(ips):
         status_msg.markdown(f"🔍 **Analyzing:** `{ip}` ({i+1}/{len(ips)})")
         
-        # Comprehensive forensics including Image 2 details
+        # Comprehensive forensics from Image 2
         intel = {
             "IP": ip, "Status": "Clean", "Country": "Unknown", "ISP": "Unknown",
             "ASN": "N/A", "Network": "N/A", "Reputation": 0,
             "Last Analysis": "Never", "Abuse Score": 0, "VT Hits": 0, "Lat": 20.0, "Lon": 0.0
         }
 
-        # API Logic - AbuseIPDB
+        # AbuseIPDB API
         if st.session_state["AbuseIPDB_key"]:
             try:
                 r = requests.get("https://api.abuseipdb.com/api/v2/check", 
@@ -137,7 +150,7 @@ if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
                 intel["Lat"], intel["Lon"] = data.get('latitude'), data.get('longitude')
             except: pass
 
-        # API Logic - VirusTotal (Detailed Forensics)
+        # VirusTotal API
         if st.session_state["VirusTotal_key"]:
             try:
                 r = requests.get(f"https://www.virustotal.com/api/v3/ip_addresses/{ip}", 
@@ -174,7 +187,7 @@ if st.session_state.scan_results is not None:
     m2.markdown(f"<div class='metric-card'><b>Malicious</b><br><h2 style='color:#ff4b4b;'>{len(res[res['Status'] != 'Clean'])}</h2></div>", unsafe_allow_html=True)
     m3.markdown(f"<div class='metric-card'><b>Clean</b><br><h2>{len(res[res['Status'] == 'Clean'])}</h2></div>", unsafe_allow_html=True)
 
-    # Map
+    # Geographic Threat Map
     st.subheader("🌐 Geographic Threat Origin")
     m = folium.Map(location=[20, 0], zoom_start=2, tiles="CartoDB dark_matter")
     for _, r in res.iterrows():
@@ -182,8 +195,8 @@ if st.session_state.scan_results is not None:
         folium.CircleMarker([r['Lat'], r['Lon']], radius=8, color=color, fill=True).add_to(m)
     st_folium(m, width=1200, height=500)
 
-    # Table
-    st.subheader("📋 Detailed Intelligence Report")
+    # Intelligence Table
+    st.subheader("📋 Forensic Intelligence Report")
     st.dataframe(res.drop(columns=['Lat', 'Lon']), use_container_width=True)
     st.download_button("📥 DOWNLOAD CSV", data=res.to_csv(index=True).encode('utf-8'), file_name="ViperIntel_Report.csv", mime="text/csv")
 
