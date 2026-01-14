@@ -1,0 +1,12 @@
+viper-intel-pro/
+├── .github/                # GitHub-specific settings
+│   └── ISSUE_TEMPLATE/     # Templates for bug reports/features
+├── .streamlit/             # Streamlit configuration
+│   └── config.toml         # UI theme and settings
+├── assets/                 # Images, logos, and animations (Lottie JSONs)
+├── app.py                  # The main application code
+├── requirements.txt        # Python dependencies
+├── README.md               # The project manual (Open Source ready)
+├── LICENSE                 # MIT License file
+├── SECURITY.md             # Security policy (how to report bugs)
+└── .gitignore              # Tells Git which files to ignore (like .env)
