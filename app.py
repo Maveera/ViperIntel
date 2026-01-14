@@ -1,10 +1,12 @@
 import streamlit as st
 import requests
 import pandas as pd
-import json, os
+import json, os, re
 from datetime import datetime
 from cryptography.fernet import Fernet, InvalidToken
 from pandas.errors import EmptyDataError
+import ipaddress
+import time
 
 # ================= FILES =================
 CONFIG_FILE = "config.json"
@@ -34,23 +36,16 @@ def audit(action):
     with open(AUDIT_FILE, "a") as f:
         f.write(f"{datetime.utcnow().isoformat()}Z | {action}\n")
 
-# ================= GLOBAL TI SOURCES =================
+# ================= MITRE ATT&CK MAP =================
+MITRE_MAP = {
+    "AbuseIPDB": "T1046 – Network Service Scanning",
+    "VirusTotal": "T1105 – Ingress Tool Transfer"
+}
+
+# ================= GLOBAL TI =================
 ALL_TI_ENGINES = [
-    "AbuseIPDB","IPQualityScore","GreyNoise","Spamhaus","Project Honey Pot",
-    "IPInfo","MaxMind","Spur.us","CleanTalk","SANS ISC","Talos Reputation",
-    "FortiGuard IP Reputation","Barracuda Reputation","Proofpoint ET Intelligence",
-    "VirusTotal","Hybrid Analysis","Any.Run","Joe Sandbox","MalwareBazaar",
-    "VirusShare","ThreatFox","InQuest","ReversingLabs","OPSWAT MetaDefender",
-    "YARAify","MalShare","OpenPhish","PhishTank","URLhaus","Google Safe Browsing",
-    "Microsoft SmartScreen","Netcraft","APWG eCrime Exchange","Cofense Intelligence",
-    "SpamCop","SURBL","PhishStats","AlienVault OTX","MISP","CIRCL","Shadowserver",
-    "Abuse.ch","FIRST.org","CERT-EU","US-CERT (CISA)","NCSC UK","CERT-IN",
-    "Team Cymru","Microsoft Defender Threat Intelligence","IBM X-Force",
-    "Cisco Talos","Palo Alto Unit42","CrowdStrike Falcon Intelligence",
-    "Recorded Future","Kaspersky Threat Intelligence","Check Point ThreatCloud",
-    "Secureworks CTU","Mandiant","Trend Micro TI","Bitdefender TI","SophosLabs",
-    "Rapid7 InsightIDR","ESET Threat Intelligence","Zscaler ThreatLabZ",
-    "Akamai Threat Intelligence","Cloudflare Radar"
+    "AbuseIPDB","VirusTotal","AlienVault OTX","GreyNoise","Spamhaus",
+    "Recorded Future","Cisco Talos","IBM X-Force","CrowdStrike Falcon"
 ]
 
 SUPPORTED_TI = ["AbuseIPDB", "VirusTotal"]
@@ -94,6 +89,24 @@ def save_config():
     with open(CONFIG_FILE, "w") as f:
         json.dump(cfg, f, indent=2)
 
+# ================= IP HELPERS =================
+def is_public_ip(ip):
+    obj = ipaddress.ip_address(ip)
+    return not (
+        obj.is_private or obj.is_loopback or obj.is_multicast
+        or obj.is_reserved or obj.is_link_local
+    )
+
+def expand_ip(value, max_expand=1024):
+    try:
+        if "/" in value:
+            net = ipaddress.ip_network(value, strict=False)
+            return [str(ip) for ip in list(net.hosts())[:max_expand]]
+        else:
+            return [str(ipaddress.ip_address(value))]
+    except:
+        return []
+
 # ================= INIT =================
 config = load_config()
 
@@ -109,169 +122,102 @@ st.session_state.setdefault("uploaded_file", None)
 
 # ================= PAGE =================
 st.set_page_config(page_title="ViperIntel Pro", page_icon="🛡️", layout="wide")
-
-st.markdown("""
-<style>
-.stApp { background: radial-gradient(circle at top left, #0f172a, #020617); }
-footer { visibility:hidden; }
-.custom-footer {
-    position: fixed;
-    bottom: 0;
-    width: 100%;
-    background: rgba(2,6,23,0.95);
-    color: #94a3b8;
-    text-align: center;
-    padding: 14px;
-    border-top: 1px solid #1f2937;
-}
-</style>
-""", unsafe_allow_html=True)
-
 st.title("🛡️ ViperIntel Pro")
 st.markdown("### Universal Threat Intelligence & Forensic Aggregator")
 
-# ================= SIDEBAR =================
-with st.sidebar:
-    st.subheader("🔑 Global API Configuration")
-
-    def ti_block(ti):
-        st.markdown(f"**{ti}**")
-
-        if not st.session_state[f"{ti}_locked"]:
-            val = st.text_input("", type="password", key=f"inp_{ti}", placeholder=f"Enter {ti} API Key")
-            if val:
-                st.session_state[f"{ti}_key"] = val
-                st.session_state[f"{ti}_locked"] = True
-                audit(f"{ti} key updated")
-                save_config()
-                st.rerun()
-        else:
-            st.markdown("••••••••••••••••")
-            if st.button("Edit", key=f"edit_{ti}"):
-                st.session_state[f"{ti}_locked"] = False
-                save_config()
-                st.rerun()
-
-        if st.button("Remove", key=f"remove_{ti}"):
-            st.session_state.active_ti.remove(ti)
-            audit(f"{ti} removed")
-            save_config()
-            st.rerun()
-
-    for ti in st.session_state.active_ti:
-        ti_block(ti)
-
-    st.divider()
-    add_ti = st.selectbox("➕ Add Threat Intelligence Source", ["Select TI"] + st.session_state.inactive_ti)
-    if add_ti != "Select TI":
-        st.session_state.active_ti.append(add_ti)
-        audit(f"{add_ti} added")
-        save_config()
-        st.rerun()
-
-    st.divider()
-    st.markdown("""
-    <a href="https://www.buymeacoffee.com/maveera" target="_blank"
-    style="display:block;text-align:center;
-    background:#FFDD00;color:#000;
-    padding:10px;border-radius:8px;
-    font-weight:bold;text-decoration:none;">
-    ☕ Buy Me a Coffee
-    </a>
-    """, unsafe_allow_html=True)
-
-    st.divider()
-    if st.button("🧹 Clear Scan Data"):
-        st.session_state.scan_results = None
-        st.session_state.uploaded_file = None
-        audit("Scan data cleared")
-        st.rerun()
-
 # ================= FILE UPLOAD =================
-uploaded = st.file_uploader("Upload CSV (IPs in first column)", type=["csv"])
+uploaded = st.file_uploader("Upload CSV / TXT (IPs, CIDRs, mixed)", type=["csv","txt"])
 if uploaded:
     st.session_state.uploaded_file = uploaded
 
 # ================= SCAN =================
 if st.button("⚡ EXECUTE DEEP SCAN"):
-    if st.session_state.uploaded_file is None:
-        st.error("❌ Please upload a CSV file.")
-        st.stop()
+    with st.spinner("🔍 Executing Deep Scan..."):
+        time.sleep(0.5)
 
-    active_supported = [
-        ti for ti in st.session_state.active_ti
-        if ti in SUPPORTED_TI and st.session_state[f"{ti}_key"]
-    ]
+        if not st.session_state.uploaded_file:
+            st.error("❌ Upload a file first.")
+            st.stop()
 
-    if not active_supported:
-        st.error("❌ Configure at least one supported TI (AbuseIPDB / VirusTotal).")
-        st.stop()
+        try:
+            df = pd.read_csv(st.session_state.uploaded_file, header=None)
+        except EmptyDataError:
+            st.error("❌ Uploaded file is empty.")
+            st.stop()
 
-    try:
-        df = pd.read_csv(st.session_state.uploaded_file, header=None)
-    except EmptyDataError:
-        st.error("❌ The uploaded CSV file is empty or invalid.")
-        st.stop()
+        # Column auto-detection
+        ip_candidates = []
+        for col in df.columns:
+            series = df[col].astype(str)
+            if series.str.contains(r"[0-9a-fA-F\.:/]").any():
+                ip_candidates = series.tolist()
+                break
 
-    if df.empty or df.shape[1] == 0:
-        st.error("❌ CSV file contains no usable data.")
-        st.stop()
+        if not ip_candidates:
+            st.error("❌ No IP-like column detected.")
+            st.stop()
 
-    ips = (
-        df.iloc[:, 0]
-        .astype(str)
-        .str.strip()
-        .replace("", pd.NA)
-        .dropna()
-        .tolist()
-    )
+        # Expand & validate
+        expanded_ips = []
+        for val in ip_candidates:
+            expanded_ips.extend(expand_ip(val.strip()))
 
-    if not ips:
-        st.error("❌ No valid IP addresses found in the first column.")
-        st.stop()
+        validated_ips = sorted({ip for ip in expanded_ips if is_public_ip(ip)})
 
-    results = []
-    for ip in ips:
-        intel = {"IP": ip, "Status": "Clean", "Abuse Score": 0, "VT Hits": 0}
+        if not validated_ips:
+            st.error("❌ No valid public IPs after filtering.")
+            st.stop()
 
-        if "AbuseIPDB" in active_supported:
-            try:
-                r = requests.get(
-                    "https://api.abuseipdb.com/api/v2/check",
-                    headers={"Key": st.session_state["AbuseIPDB_key"], "Accept": "application/json"},
-                    params={"ipAddress": ip},
-                    timeout=10
-                ).json()
-                intel["Abuse Score"] = r.get("data", {}).get("abuseConfidenceScore", 0)
-            except:
-                pass
+        progress = st.progress(0)
+        results = []
 
-        if "VirusTotal" in active_supported:
-            try:
-                r = requests.get(
-                    f"https://www.virustotal.com/api/v3/ip_addresses/{ip}",
-                    headers={"x-apikey": st.session_state["VirusTotal_key"]},
-                    timeout=10
-                ).json()
-                intel["VT Hits"] = r["data"]["attributes"]["last_analysis_stats"].get("malicious", 0)
-            except:
-                pass
+        for i, ip in enumerate(validated_ips):
+            progress.progress((i + 1) / len(validated_ips))
 
-        if intel["Abuse Score"] > 25 or intel["VT Hits"] > 0:
-            intel["Status"] = "🚨 Malicious"
+            intel = {
+                "IP": ip,
+                "Status": "Clean",
+                "Abuse Score": 0,
+                "VT Hits": 0,
+                "MITRE ATT&CK": ""
+            }
 
-        results.append(intel)
+            if st.session_state["AbuseIPDB_key"]:
+                try:
+                    r = requests.get(
+                        "https://api.abuseipdb.com/api/v2/check",
+                        headers={"Key": st.session_state["AbuseIPDB_key"], "Accept": "application/json"},
+                        params={"ipAddress": ip},
+                        timeout=10
+                    ).json()
+                    intel["Abuse Score"] = r.get("data", {}).get("abuseConfidenceScore", 0)
+                    if intel["Abuse Score"] > 0:
+                        intel["MITRE ATT&CK"] = MITRE_MAP["AbuseIPDB"]
+                except:
+                    pass
 
-    st.session_state.scan_results = pd.DataFrame(results)
+            if st.session_state["VirusTotal_key"]:
+                try:
+                    r = requests.get(
+                        f"https://www.virustotal.com/api/v3/ip_addresses/{ip}",
+                        headers={"x-apikey": st.session_state["VirusTotal_key"]},
+                        timeout=10
+                    ).json()
+                    intel["VT Hits"] = r["data"]["attributes"]["last_analysis_stats"].get("malicious", 0)
+                    if intel["VT Hits"] > 0:
+                        intel["MITRE ATT&CK"] = MITRE_MAP["VirusTotal"]
+                except:
+                    pass
+
+            if intel["Abuse Score"] > 25 or intel["VT Hits"] > 0:
+                intel["Status"] = "🚨 Malicious"
+
+            results.append(intel)
+
+        st.session_state.scan_results = pd.DataFrame(results)
+        st.success("✅ Scan completed successfully.")
 
 # ================= RESULTS =================
 if st.session_state.scan_results is not None:
     st.subheader("📋 Intelligence Report")
     st.dataframe(st.session_state.scan_results, use_container_width=True)
-
-# ================= FOOTER =================
-st.markdown("""
-<div class="custom-footer">
-© 2026 <b>ViperIntel Pro</b> | All Rights Reserved
-</div>
-""", unsafe_allow_html=True)
