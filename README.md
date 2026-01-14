@@ -50,7 +50,6 @@ IPQualityScore
 ### 3. The `requirements.txt` (Essential)
 Create another file named `requirements.txt` and paste this:
 
-```text
 streamlit
 requests
 pandas
