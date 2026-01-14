@@ -2,71 +2,83 @@ import streamlit as st
 import requests
 import pandas as pd
 import time
-import folium
-from streamlit_folium import st_folium
-import json
-import os
+import json, os
+from datetime import datetime
+from cryptography.fernet import Fernet
 
-# ================= PERSISTENCE =================
-CONFIG_FILE = "config.json"
+# ================= FILES =================
+CONFIG_DIR = "configs"
+AUDIT_DIR = "audit_logs"
+KEY_FILE = ".secret.key"
 
-DEFAULT_CONFIG = {
-    "active_ti": [
-        "AbuseIPDB",
-        "VirusTotal",
-        "AlienVault OTX"
-    ],
-    "inactive_ti": [
-        "IPQualityScore",
-        "GreyNoise",
-        "Spamhaus",
-        "Recorded Future",
-        "Cisco Talos",
-        "IBM X-Force"
-    ],
-    "keys": {},
-    "locked": {}
-}
+os.makedirs(CONFIG_DIR, exist_ok=True)
+os.makedirs(AUDIT_DIR, exist_ok=True)
 
-def load_config():
-    if not os.path.exists(CONFIG_FILE):
-        return DEFAULT_CONFIG.copy()
-    with open(CONFIG_FILE, "r") as f:
-        return json.load(f)
+# ================= ENCRYPTION =================
+def load_or_create_key():
+    if not os.path.exists(KEY_FILE):
+        with open(KEY_FILE, "wb") as f:
+            f.write(Fernet.generate_key())
+    return open(KEY_FILE, "rb").read()
 
-def save_config():
-    config = {
-        "active_ti": st.session_state.active_ti,
-        "inactive_ti": st.session_state.inactive_ti,
-        "keys": {ti: st.session_state[f"{ti}_key"] for ti in ALL_TI_ENGINES},
-        "locked": {ti: st.session_state[f"{ti}_locked"] for ti in ALL_TI_ENGINES}
-    }
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=2)
+FERNET = Fernet(load_or_create_key())
 
-# ================= PAGE CONFIG =================
-st.set_page_config(
-    page_title="ViperIntel Pro",
-    page_icon="🛡️",
-    layout="wide"
-)
+def encrypt(val: str) -> str:
+    return FERNET.encrypt(val.encode()).decode()
 
-# ================= GLOBAL TI =================
+def decrypt(val: str) -> str:
+    return FERNET.decrypt(val.encode()).decode()
+
+# ================= AUDIT =================
+def audit(user, action):
+    with open(f"{AUDIT_DIR}/audit_{user}.log", "a") as f:
+        f.write(f"{datetime.utcnow().isoformat()}Z | {action}\n")
+
+# ================= USER =================
+st.sidebar.subheader("👤 User")
+username = st.sidebar.text_input("Username", value="default").strip()
+if not username:
+    st.stop()
+
+CONFIG_FILE = f"{CONFIG_DIR}/config_{username}.json"
+
+# ================= TI =================
 ALL_TI_ENGINES = [
-    "AbuseIPDB",
-    "VirusTotal",
-    "AlienVault OTX",
-    "IPQualityScore",
-    "GreyNoise",
-    "Spamhaus",
-    "Recorded Future",
-    "Cisco Talos",
-    "IBM X-Force"
+    "AbuseIPDB", "VirusTotal", "AlienVault OTX",
+    "IPQualityScore", "GreyNoise", "Spamhaus",
+    "Recorded Future", "Cisco Talos", "IBM X-Force"
 ]
 
 SUPPORTED_TI = ["AbuseIPDB", "VirusTotal"]
 
-# ================= LOAD CONFIG =================
+DEFAULT_CONFIG = {
+    "active_ti": ALL_TI_ENGINES[:3],
+    "inactive_ti": ALL_TI_ENGINES[3:],
+    "keys": {},
+    "locked": {}
+}
+
+# ================= CONFIG =================
+def load_config():
+    if not os.path.exists(CONFIG_FILE):
+        return DEFAULT_CONFIG.copy()
+    with open(CONFIG_FILE, "r") as f:
+        cfg = json.load(f)
+        for k, v in cfg.get("keys", {}).items():
+            cfg["keys"][k] = decrypt(v)
+        return cfg
+
+def save_config():
+    cfg = {
+        "active_ti": st.session_state.active_ti,
+        "inactive_ti": st.session_state.inactive_ti,
+        "keys": {ti: encrypt(st.session_state[f"{ti}_key"]) for ti in ALL_TI_ENGINES if st.session_state[f"{ti}_key"]},
+        "locked": {ti: st.session_state[f"{ti}_locked"] for ti in ALL_TI_ENGINES}
+    }
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+# ================= INIT =================
 config = load_config()
 
 st.session_state.setdefault("active_ti", config["active_ti"])
@@ -76,44 +88,11 @@ for ti in ALL_TI_ENGINES:
     st.session_state.setdefault(f"{ti}_key", config["keys"].get(ti, ""))
     st.session_state.setdefault(f"{ti}_locked", config["locked"].get(ti, False))
 
+# 🔹 DATA STATE (RESETTABLE)
 st.session_state.setdefault("scan_results", None)
+st.session_state.setdefault("uploaded_file", None)
 
-# ================= STYLES =================
-st.markdown("""
-<style>
-.stApp { background-color: #0a0e14; color: #e0e6ed; }
-footer { visibility: hidden; }
-
-.key-box {
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 10px;
-    padding: 12px;
-    margin-bottom: 12px;
-}
-
-.key-mask {
-    font-family: monospace;
-    letter-spacing: 3px;
-    color: #9aa4b2;
-    margin-bottom: 8px;
-}
-
-.custom-footer {
-    position: fixed;
-    left: 0;
-    bottom: 0;
-    width: 100%;
-    background-color: rgba(10,14,20,0.95);
-    color: #94a3b8;
-    text-align: center;
-    padding: 14px;
-    border-top: 1px solid #1f2937;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# ================= HEADER =================
+# ================= UI =================
 st.title("🛡️ ViperIntel Pro")
 st.markdown("#### Universal Threat Intelligence & Forensic Aggregator")
 
@@ -122,57 +101,56 @@ with st.sidebar:
     st.subheader("🔑 Global API Configuration")
 
     def ti_block(ti):
-        with st.container():
-            st.markdown('<div class="key-box">', unsafe_allow_html=True)
-            st.markdown(f"### {ti}")
+        st.markdown(f"### {ti}")
 
-            if not st.session_state[f"{ti}_locked"]:
-                val = st.text_input(
-                    "",
-                    type="password",
-                    key=f"input_{ti}",
-                    placeholder=f"Enter {ti} API Key",
-                    label_visibility="collapsed"
-                )
-                if val:
-                    st.session_state[f"{ti}_key"] = val
-                    st.session_state[f"{ti}_locked"] = True
-                    save_config()
-                    st.rerun()
-            else:
-                st.markdown('<div class="key-mask">••••••••••••••••</div>', unsafe_allow_html=True)
-                if st.button("Edit", key=f"edit_{ti}"):
-                    st.session_state[f"{ti}_locked"] = False
-                    save_config()
-                    st.rerun()
-
-            if st.button("Remove", key=f"remove_{ti}"):
-                st.session_state.active_ti.remove(ti)
-                st.session_state.inactive_ti.append(ti)
+        if not st.session_state[f"{ti}_locked"]:
+            val = st.text_input("", type="password", key=f"inp_{ti}")
+            if val:
+                st.session_state[f"{ti}_key"] = val
+                st.session_state[f"{ti}_locked"] = True
+                audit(username, f"{ti} key updated")
+                save_config()
+                st.rerun()
+        else:
+            st.markdown("••••••••••••••••")
+            if st.button("Edit", key=f"edit_{ti}"):
+                st.session_state[f"{ti}_locked"] = False
                 save_config()
                 st.rerun()
 
-            st.markdown('</div>', unsafe_allow_html=True)
+        if st.button("Remove", key=f"remove_{ti}"):
+            st.session_state.active_ti.remove(ti)
+            st.session_state.inactive_ti.append(ti)
+            audit(username, f"{ti} removed from active")
+            save_config()
+            st.rerun()
 
     for ti in st.session_state.active_ti:
         ti_block(ti)
 
     if st.session_state.inactive_ti:
-        st.divider()
-        add_ti = st.selectbox(
-            "➕ Add Threat Intelligence Source",
-            ["Select TI"] + st.session_state.inactive_ti
-        )
+        add_ti = st.selectbox("➕ Add Threat Intelligence Source", ["Select TI"] + st.session_state.inactive_ti)
         if add_ti != "Select TI":
             st.session_state.inactive_ti.remove(add_ti)
             st.session_state.active_ti.append(add_ti)
+            audit(username, f"{add_ti} added to active")
             save_config()
             st.rerun()
 
-# ================= FILE UPLOAD =================
-uploaded_file = st.file_uploader("Upload CSV (IPs in first column)", type=["csv"])
+    # 🔴 DATA RESET ONLY
+    st.divider()
+    if st.button("🧹 Clear Scan Data"):
+        st.session_state.scan_results = None
+        st.session_state.uploaded_file = None
+        audit(username, "Scan data cleared")
+        st.rerun()
 
-# ================= EXECUTE SCAN =================
+# ================= FILE UPLOAD =================
+uploaded = st.file_uploader("Upload CSV (IPs in first column)", type=["csv"])
+if uploaded:
+    st.session_state.uploaded_file = uploaded
+
+# ================= SCAN =================
 if st.button("⚡ EXECUTE DEEP SCAN"):
     active_supported = [
         ti for ti in st.session_state.active_ti
@@ -181,24 +159,15 @@ if st.button("⚡ EXECUTE DEEP SCAN"):
 
     if not active_supported:
         st.error("❌ At least one supported TI API is required.")
-    elif not uploaded_file:
+    elif not st.session_state.uploaded_file:
         st.error("❌ Please upload a CSV file.")
     else:
-        df = pd.read_csv(uploaded_file, header=None)
+        df = pd.read_csv(st.session_state.uploaded_file, header=None)
         ips = df.iloc[:, 0].astype(str).tolist()
 
         results = []
-        progress = st.progress(0)
-
-        for i, ip in enumerate(ips):
-            intel = {
-                "IP": ip,
-                "Status": "Clean",
-                "Abuse Score": 0,
-                "VT Hits": 0,
-                "Lat": None,
-                "Lon": None
-            }
+        for ip in ips:
+            intel = {"IP": ip, "Status": "Clean", "Abuse Score": 0, "VT Hits": 0}
 
             if "AbuseIPDB" in active_supported:
                 try:
@@ -227,23 +196,10 @@ if st.button("⚡ EXECUTE DEEP SCAN"):
                 intel["Status"] = "🚨 Malicious"
 
             results.append(intel)
-            progress.progress((i + 1) / len(ips))
-            time.sleep(0.05)
 
         st.session_state.scan_results = pd.DataFrame(results)
 
 # ================= RESULTS =================
 if st.session_state.scan_results is not None:
-    res = st.session_state.scan_results.copy()
-    res.index = res.index + 1
-    res.index.name = "S.No"
-
     st.subheader("📋 Intelligence Report")
-    st.dataframe(res.drop(columns=["Lat", "Lon"]), use_container_width=True)
-
-# ================= FOOTER =================
-st.markdown("""
-<div class="custom-footer">
-© 2026 <b>ViperIntel Pro</b> | All Rights Reserved
-</div>
-""", unsafe_allow_html=True)
+    st.dataframe(st.session_state.scan_results, use_container_width=True)
