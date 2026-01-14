@@ -33,26 +33,34 @@ def audit(action):
     with open(AUDIT_FILE, "a") as f:
         f.write(f"{datetime.utcnow().isoformat()}Z | {action}\n")
 
-# ================= GLOBAL TI LIST =================
+# ================= GLOBAL TI SOURCES =================
 ALL_TI_ENGINES = [
-    # Reputation / IP
-    "AbuseIPDB", "IPQualityScore", "GreyNoise", "Spamhaus",
-    "Project Honey Pot", "IPInfo", "MaxMind", "Spur.us",
+    # IP / Reputation
+    "AbuseIPDB","IPQualityScore","GreyNoise","Spamhaus","Project Honey Pot",
+    "IPInfo","MaxMind","Spur.us","CleanTalk","SANS ISC","Talos Reputation",
+    "FortiGuard IP Reputation","Barracuda Reputation","Proofpoint ET Intelligence",
 
-    # Malware / IOC
-    "VirusTotal", "Hybrid Analysis", "Any.Run", "Joe Sandbox",
-    "MalwareBazaar", "VirusShare",
+    # Malware / Sandbox
+    "VirusTotal","Hybrid Analysis","Any.Run","Joe Sandbox","MalwareBazaar",
+    "VirusShare","ThreatFox","InQuest","ReversingLabs","OPSWAT MetaDefender",
+    "YARAify","MalShare",
 
     # Phishing / URL
-    "OpenPhish", "PhishTank", "URLhaus", "Google Safe Browsing",
+    "OpenPhish","PhishTank","URLhaus","Google Safe Browsing",
+    "Microsoft SmartScreen","Netcraft","APWG eCrime Exchange",
+    "Cofense Intelligence","SpamCop","SURBL","PhishStats",
 
-    # Open / Community
-    "AlienVault OTX", "MISP", "CIRCL", "ThreatFox",
+    # Open / CERT
+    "AlienVault OTX","MISP","CIRCL","Shadowserver","Abuse.ch","FIRST.org",
+    "CERT-EU","US-CERT (CISA)","NCSC UK","CERT-IN","Team Cymru",
 
     # Enterprise
-    "Microsoft Defender TI", "IBM X-Force", "Cisco Talos",
-    "Palo Alto Unit42", "CrowdStrike Falcon",
-    "Recorded Future", "Kaspersky TI", "Check Point ThreatCloud"
+    "Microsoft Defender Threat Intelligence","IBM X-Force","Cisco Talos",
+    "Palo Alto Unit42","CrowdStrike Falcon Intelligence","Recorded Future",
+    "Kaspersky Threat Intelligence","Check Point ThreatCloud",
+    "Secureworks CTU","Mandiant","Trend Micro TI","Bitdefender TI",
+    "SophosLabs","Rapid7 InsightIDR","ESET Threat Intelligence",
+    "Zscaler ThreatLabZ","Akamai Threat Intelligence","Cloudflare Radar"
 ]
 
 SUPPORTED_TI = ["AbuseIPDB", "VirusTotal"]
@@ -155,20 +163,18 @@ with st.sidebar:
     for ti in st.session_state.active_ti:
         ti_block(ti)
 
-    if st.session_state.inactive_ti:
-        st.divider()
-        add_ti = st.selectbox(
-            "➕ Add Threat Intelligence Source",
-            ["Select TI"] + sorted(st.session_state.inactive_ti)
-        )
-        if add_ti != "Select TI":
-            st.session_state.inactive_ti.remove(add_ti)
-            st.session_state.active_ti.append(add_ti)
-            audit(f"{add_ti} added to active")
-            save_config()
-            st.rerun()
+    st.divider()
+    add_ti = st.selectbox(
+        "➕ Add Threat Intelligence Source",
+        ["Select TI"] + sorted(st.session_state.inactive_ti)
+    )
+    if add_ti != "Select TI":
+        st.session_state.inactive_ti.remove(add_ti)
+        st.session_state.active_ti.append(add_ti)
+        audit(f"{add_ti} added to active")
+        save_config()
+        st.rerun()
 
-    # ☕ Buy Me a Coffee
     st.divider()
     st.markdown(
         """
