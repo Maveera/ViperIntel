@@ -81,22 +81,16 @@ ENGINE_WEIGHTS = {
 
 def calculate_risk(intel):
     score = 0
-
     if intel["Abuse Score"] >= 25:
         score += intel["Abuse Score"] * ENGINE_WEIGHTS["AbuseIPDB"]
-
     if intel["VT Hits"] > 0:
         score += 100 * ENGINE_WEIGHTS["VirusTotal"]
-
     if intel["OTX Pulses"] > 0:
         score += 60 * ENGINE_WEIGHTS["AlienVaultOTX"]
-
     if intel["IPQS Fraud Score"] >= 75:
         score += intel["IPQS Fraud Score"] * ENGINE_WEIGHTS["IPQualityScore"]
-
     if intel["Seen Before"]:
         score += 15
-
     return min(int(score), 100)
 
 # =========================
@@ -231,7 +225,7 @@ async def run_scan(ips, keys):
     return await asyncio.gather(*(enrich_ip(ip, keys, sem) for ip in ips))
 
 # =========================
-# API KEY INPUT (FIXED)
+# API KEY INPUT (INLINE FIX)
 # =========================
 def api_input(engine):
     key_name = f"{engine}_key"
@@ -241,7 +235,7 @@ def api_input(engine):
 
     if not st.session_state[lock_name]:
         val = st.text_input(
-            label="",
+            "",
             type="password",
             key=f"input_{engine}",
             placeholder=f"Enter {engine} API Key",
@@ -252,15 +246,39 @@ def api_input(engine):
             st.session_state[lock_name] = True
             st.rerun()
     else:
-        col_mask, col_edit = st.columns([4, 1])
-
-        with col_mask:
+        c1, c2 = st.columns([4, 1])
+        with c1:
             st.markdown("<div class='key-freeze'>••••••••••••••••••••</div>", unsafe_allow_html=True)
-
-        with col_edit:
+        with c2:
             if st.button("Edit", key=f"edit_{engine}", use_container_width=True):
                 st.session_state[lock_name] = False
                 st.rerun()
+
+# =========================
+# COLUMN FILTERING LOGIC
+# =========================
+def get_visible_columns(df):
+    cols = ["IP", "Status", "Confidence", "Correlation", "Country", "ISP", "Timeline"]
+
+    if st.session_state.get("AbuseIPDB_key"):
+        cols.append("Abuse Score")
+
+    if st.session_state.get("VirusTotal_key"):
+        cols.append("VT Hits")
+
+    if st.session_state.get("AlienVaultOTX_key"):
+        cols.append("OTX Pulses")
+
+    if st.session_state.get("IPQualityScore_key"):
+        cols.append("IPQS Fraud Score")
+
+    if "Seen Before" in df.columns:
+        cols.append("Seen Before")
+
+    if "MITRE Techniques" in df.columns:
+        cols.append("MITRE Techniques")
+
+    return [c for c in cols if c in df.columns]
 
 # =========================
 # UI
@@ -288,7 +306,17 @@ if st.button("⚡ EXECUTE FULL ASYNC SCAN") and uploaded:
 # =========================
 if st.session_state.scan_results is not None:
     res = st.session_state.scan_results
-    st.dataframe(res, use_container_width=True)
+    visible_cols = get_visible_columns(res)
+
+    st.subheader("📋 Intelligence Report")
+    st.dataframe(res[visible_cols], use_container_width=True)
+
+    st.download_button(
+        "📥 DOWNLOAD CSV",
+        data=res[visible_cols].to_csv(index=False).encode("utf-8"),
+        file_name="ViperIntel_Report_Filtered.csv",
+        mime="text/csv"
+    )
 
     st.subheader("🌍 Threat Map")
     m = folium.Map(location=[20, 0], zoom_start=2, tiles="CartoDB dark_matter")
