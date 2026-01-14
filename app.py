@@ -4,6 +4,45 @@ import pandas as pd
 import time
 import folium
 from streamlit_folium import st_folium
+import json
+import os
+
+# ================= PERSISTENCE =================
+CONFIG_FILE = "config.json"
+
+DEFAULT_CONFIG = {
+    "active_ti": [
+        "AbuseIPDB",
+        "VirusTotal",
+        "AlienVault OTX"
+    ],
+    "inactive_ti": [
+        "IPQualityScore",
+        "GreyNoise",
+        "Spamhaus",
+        "Recorded Future",
+        "Cisco Talos",
+        "IBM X-Force"
+    ],
+    "keys": {},
+    "locked": {}
+}
+
+def load_config():
+    if not os.path.exists(CONFIG_FILE):
+        return DEFAULT_CONFIG.copy()
+    with open(CONFIG_FILE, "r") as f:
+        return json.load(f)
+
+def save_config():
+    config = {
+        "active_ti": st.session_state.active_ti,
+        "inactive_ti": st.session_state.inactive_ti,
+        "keys": {ti: st.session_state[f"{ti}_key"] for ti in ALL_TI_ENGINES},
+        "locked": {ti: st.session_state[f"{ti}_locked"] for ti in ALL_TI_ENGINES}
+    }
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(config, f, indent=2)
 
 # ================= PAGE CONFIG =================
 st.set_page_config(
@@ -12,7 +51,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# ================= GLOBAL TI CATALOG =================
+# ================= GLOBAL TI =================
 ALL_TI_ENGINES = [
     "AbuseIPDB",
     "VirusTotal",
@@ -25,16 +64,17 @@ ALL_TI_ENGINES = [
     "IBM X-Force"
 ]
 
-# Only these are actually queried
 SUPPORTED_TI = ["AbuseIPDB", "VirusTotal"]
 
-# ================= SESSION STATE =================
-st.session_state.setdefault("active_ti", ALL_TI_ENGINES[:3])
-st.session_state.setdefault("inactive_ti", ALL_TI_ENGINES[3:])
+# ================= LOAD CONFIG =================
+config = load_config()
+
+st.session_state.setdefault("active_ti", config["active_ti"])
+st.session_state.setdefault("inactive_ti", config["inactive_ti"])
 
 for ti in ALL_TI_ENGINES:
-    st.session_state.setdefault(f"{ti}_key", "")
-    st.session_state.setdefault(f"{ti}_locked", False)
+    st.session_state.setdefault(f"{ti}_key", config["keys"].get(ti, ""))
+    st.session_state.setdefault(f"{ti}_locked", config["locked"].get(ti, False))
 
 st.session_state.setdefault("scan_results", None)
 
@@ -69,7 +109,6 @@ footer { visibility: hidden; }
     text-align: center;
     padding: 14px;
     border-top: 1px solid #1f2937;
-    z-index: 1000;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -85,11 +124,8 @@ with st.sidebar:
     def ti_block(ti):
         with st.container():
             st.markdown('<div class="key-box">', unsafe_allow_html=True)
-
-            # ✅ TI NAME ALWAYS VISIBLE
             st.markdown(f"### {ti}")
 
-            # ---------- EDIT MODE ----------
             if not st.session_state[f"{ti}_locked"]:
                 val = st.text_input(
                     "",
@@ -101,32 +137,26 @@ with st.sidebar:
                 if val:
                     st.session_state[f"{ti}_key"] = val
                     st.session_state[f"{ti}_locked"] = True
+                    save_config()
                     st.rerun()
-
-            # ---------- LOCKED MODE ----------
             else:
-                st.markdown(
-                    '<div class="key-mask">••••••••••••••••</div>',
-                    unsafe_allow_html=True
-                )
-
+                st.markdown('<div class="key-mask">••••••••••••••••</div>', unsafe_allow_html=True)
                 if st.button("Edit", key=f"edit_{ti}"):
                     st.session_state[f"{ti}_locked"] = False
+                    save_config()
                     st.rerun()
 
-            # ---------- REMOVE TI ----------
             if st.button("Remove", key=f"remove_{ti}"):
                 st.session_state.active_ti.remove(ti)
                 st.session_state.inactive_ti.append(ti)
+                save_config()
                 st.rerun()
 
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # ----- ACTIVE TI -----
     for ti in st.session_state.active_ti:
         ti_block(ti)
 
-    # ----- ADD TI BACK -----
     if st.session_state.inactive_ti:
         st.divider()
         add_ti = st.selectbox(
@@ -136,6 +166,7 @@ with st.sidebar:
         if add_ti != "Select TI":
             st.session_state.inactive_ti.remove(add_ti)
             st.session_state.active_ti.append(add_ti)
+            save_config()
             st.rerun()
 
 # ================= FILE UPLOAD =================
@@ -149,7 +180,7 @@ if st.button("⚡ EXECUTE DEEP SCAN"):
     ]
 
     if not active_supported:
-        st.error("❌ At least one supported TI API (AbuseIPDB or VirusTotal) is required.")
+        st.error("❌ At least one supported TI API is required.")
     elif not uploaded_file:
         st.error("❌ Please upload a CSV file.")
     else:
@@ -173,17 +204,11 @@ if st.button("⚡ EXECUTE DEEP SCAN"):
                 try:
                     r = requests.get(
                         "https://api.abuseipdb.com/api/v2/check",
-                        headers={
-                            "Key": st.session_state["AbuseIPDB_key"],
-                            "Accept": "application/json"
-                        },
+                        headers={"Key": st.session_state["AbuseIPDB_key"], "Accept": "application/json"},
                         params={"ipAddress": ip},
                         timeout=10
                     ).json()
-                    data = r.get("data", {})
-                    intel["Abuse Score"] = data.get("abuseConfidenceScore", 0)
-                    intel["Lat"] = data.get("latitude")
-                    intel["Lon"] = data.get("longitude")
+                    intel["Abuse Score"] = r.get("data", {}).get("abuseConfidenceScore", 0)
                 except:
                     pass
 
@@ -215,18 +240,6 @@ if st.session_state.scan_results is not None:
 
     st.subheader("📋 Intelligence Report")
     st.dataframe(res.drop(columns=["Lat", "Lon"]), use_container_width=True)
-
-    st.subheader("🌍 Geographic Threat Origin")
-    m = folium.Map(location=[20, 0], zoom_start=2, tiles="CartoDB dark_matter")
-    for _, r in res.iterrows():
-        if r["Lat"] and r["Lon"]:
-            folium.CircleMarker(
-                [r["Lat"], r["Lon"]],
-                radius=7,
-                color="red" if r["Status"] != "Clean" else "#00ffcc",
-                fill=True
-            ).add_to(m)
-    st_folium(m, width=1200, height=450)
 
 # ================= FOOTER =================
 st.markdown("""
