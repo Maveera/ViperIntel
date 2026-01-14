@@ -36,3 +36,11 @@ pip install -r requirements.txt
 
 # Run the dashboard
 streamlit run app.py
+
+#🔑 Required API Keys
+ViperIntel Pro requires your own API keys to function. Most have free tiers:
+
+AbuseIPDB API
+VirusTotal API
+AlienVault OTX
+IPQualityScore
