@@ -25,6 +25,7 @@ ALL_TI_ENGINES = [
     "IBM X-Force"
 ]
 
+# Only these are actually queried
 SUPPORTED_TI = ["AbuseIPDB", "VirusTotal"]
 
 # ================= SESSION STATE =================
@@ -55,6 +56,7 @@ footer { visibility: hidden; }
     font-family: monospace;
     letter-spacing: 3px;
     color: #9aa4b2;
+    margin-bottom: 8px;
 }
 
 .custom-footer {
@@ -80,16 +82,14 @@ st.markdown("#### Universal Threat Intelligence & Forensic Aggregator")
 with st.sidebar:
     st.subheader("🔑 Global API Configuration")
 
-    # -------- TI BLOCK --------
     def ti_block(ti):
         with st.container():
             st.markdown('<div class="key-box">', unsafe_allow_html=True)
 
-            # SHOW LABEL ONLY IF KEY IS EMPTY
-            if not st.session_state[f"{ti}_key"]:
-                st.markdown(f"**{ti} Key**")
+            # ✅ TI NAME ALWAYS VISIBLE
+            st.markdown(f"### {ti}")
 
-            # EDIT MODE
+            # ---------- EDIT MODE ----------
             if not st.session_state[f"{ti}_locked"]:
                 val = st.text_input(
                     "",
@@ -103,15 +103,18 @@ with st.sidebar:
                     st.session_state[f"{ti}_locked"] = True
                     st.rerun()
 
-            # LOCKED MODE
+            # ---------- LOCKED MODE ----------
             else:
-                st.markdown('<div class="key-mask">••••••••••••••••</div>', unsafe_allow_html=True)
+                st.markdown(
+                    '<div class="key-mask">••••••••••••••••</div>',
+                    unsafe_allow_html=True
+                )
 
                 if st.button("Edit", key=f"edit_{ti}"):
                     st.session_state[f"{ti}_locked"] = False
                     st.rerun()
 
-            # REMOVE TI
+            # ---------- REMOVE TI ----------
             if st.button("Remove", key=f"remove_{ti}"):
                 st.session_state.active_ti.remove(ti)
                 st.session_state.inactive_ti.append(ti)
@@ -119,11 +122,11 @@ with st.sidebar:
 
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # -------- ACTIVE TI --------
+    # ----- ACTIVE TI -----
     for ti in st.session_state.active_ti:
         ti_block(ti)
 
-    # -------- ADD TI BACK --------
+    # ----- ADD TI BACK -----
     if st.session_state.inactive_ti:
         st.divider()
         add_ti = st.selectbox(
@@ -146,7 +149,7 @@ if st.button("⚡ EXECUTE DEEP SCAN"):
     ]
 
     if not active_supported:
-        st.error("❌ At least one supported TI API (AbuseIPDB / VirusTotal) is required.")
+        st.error("❌ At least one supported TI API (AbuseIPDB or VirusTotal) is required.")
     elif not uploaded_file:
         st.error("❌ Please upload a CSV file.")
     else:
@@ -170,13 +173,17 @@ if st.button("⚡ EXECUTE DEEP SCAN"):
                 try:
                     r = requests.get(
                         "https://api.abuseipdb.com/api/v2/check",
-                        headers={"Key": st.session_state["AbuseIPDB_key"], "Accept": "application/json"},
+                        headers={
+                            "Key": st.session_state["AbuseIPDB_key"],
+                            "Accept": "application/json"
+                        },
                         params={"ipAddress": ip},
                         timeout=10
                     ).json()
                     data = r.get("data", {})
                     intel["Abuse Score"] = data.get("abuseConfidenceScore", 0)
-                    intel["Lat"], intel["Lon"] = data.get("latitude"), data.get("longitude")
+                    intel["Lat"] = data.get("latitude")
+                    intel["Lon"] = data.get("longitude")
                 except:
                     pass
 
