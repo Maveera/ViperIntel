@@ -9,14 +9,14 @@ from streamlit_folium import st_folium
 st.set_page_config(page_title="ViperIntel Pro | By Maveera", page_icon="🛡️", layout="wide")
 
 # --- Session State Management ---
-# Handles persistent API locking and forensic results
+# Handles persistent API locking and UI state
 engines = ["AbuseIPDB", "VirusTotal", "AlienVault OTX", "IPQualityScore", "ThreatFox", "Shodan", "GreyNoise", "CriminalIP"]
 for e in engines:
     if f"{e}_key" not in st.session_state: st.session_state[f"{e}_key"] = ""
     if f"{e}_locked" not in st.session_state: st.session_state[f"{e}_locked"] = False
 if 'scan_results' not in st.session_state: st.session_state.scan_results = None
 
-# --- UI Styling & Neon Design ---
+# --- UI Styling ---
 st.markdown("""
     <style>
     .stApp { background-color: #0a0e14; color: #e0e6ed; }
@@ -25,40 +25,18 @@ st.markdown("""
     
     /* Neon EXECUTE Button Design */
     div.stButton > button:first-child {
-        background: transparent !important;
-        color: #00ffcc !important;
-        border: 2px solid #00ffcc !important;
+        background-color: #00ffcc !important;
+        color: #0a0e14 !important;
         font-weight: bold !important;
         width: 100% !important;
         height: 3.8em !important;
-        border-radius: 12px !important;
-        transition: all 0.3s ease;
-        text-transform: uppercase;
-        letter-spacing: 2px;
-    }
-    div.stButton > button:first-child:hover {
-        background: #00ffcc !important;
-        color: #0a0e14 !important;
-        box-shadow: 0px 0px 20px #00ffcc;
-    }
-
-    /* Reset Button Styling */
-    .stButton > button[kind="secondary"] {
-        background-color: transparent !important;
-        color: #ff4b4b !important;
-        border: 1px solid #ff4b4b !important;
-    }
-
-    .metric-card { background: #161b22; padding: 20px; border-radius: 10px; border: 1px solid #1f2937; text-align: center; }
-    .custom-footer {
-        position: fixed; left: 0; bottom: 0; width: 100%;
-        background-color: rgba(10, 14, 20, 0.95); color: #94a3b8;
-        text-align: center; padding: 15px; border-top: 1px solid #1f2937;
-        z-index: 1000;
+        border-radius: 10px !important;
+        border: none !important;
+        box-shadow: 0px 0px 15px #00ffcc;
     }
     
-    /* Sidebar Layout Fixes */
-    .locked-text { color: #00ffcc; font-size: 14px; font-weight: bold; margin-top: 5px; }
+    /* Inline Locked Label Styling */
+    .locked-label { color: #00ffcc; font-weight: bold; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -69,10 +47,9 @@ with col_title:
     st.markdown("#### Universal Threat Intelligence & Forensic Aggregator")
 
 with col_reset:
-    st.write(" ")
-    if st.button("🔄 RESET CONSOLE", use_container_width=True, type="secondary"):
+    if st.button("🔄 Reset Console", type="secondary"):
         st.session_state.scan_results = None
-        st.rerun() #
+        st.rerun()
 
 # --- Sidebar: TI Command Center ---
 with st.sidebar:
@@ -84,16 +61,17 @@ with st.sidebar:
     # Fixed: Inline Status and Edit button on the same row
     def api_input(label, session_key):
         if not st.session_state[f"{session_key}_locked"]:
+            # Logic: If user types and hits enter, it freezes
             val = st.text_input(label, type="password", key=f"inp_{session_key}")
             if val:
                 st.session_state[f"{session_key}_key"] = val
                 st.session_state[f"{session_key}_locked"] = True
                 st.rerun()
         else:
-            # Layout: ✅ Label + ✏️ Button on the same line
-            stat_col, edit_col = st.columns([4, 1])
-            stat_col.markdown(f"<div class='locked-text'>✅ {session_key} Locked</div>", unsafe_allow_html=True)
-            if edit_col.button("✏️", key=f"edit_{session_key}"):
+            # Display inline: Success message + Edit button side-by-side
+            c_label, c_btn = st.columns([4, 1])
+            c_label.markdown(f"✅ <span class='locked-label'>{session_key} Locked</span>", unsafe_allow_html=True)
+            if c_btn.button("✏️", key=f"edit_{session_key}"):
                 st.session_state[f"{session_key}_locked"] = False
                 st.rerun()
 
@@ -103,7 +81,7 @@ with st.sidebar:
     st.divider()
     st.markdown('<a href="https://www.buymeacoffee.com/maveera" target="_blank" style="display:block; background:#FFDD00; color:black; padding:10px; border-radius:5px; text-align:center; text-decoration:none; font-weight:bold;">☕ Support Maveera</a>', unsafe_allow_html=True)
 
-# --- Main Scan Engine ---
+# --- Main Scan Logic ---
 uploaded_file = st.file_uploader("Upload CSV (IPs in first column)", type=["csv"])
 
 if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
@@ -111,89 +89,73 @@ if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
     if not any(active_keys):
         st.error("❌ Configuration Error: Please lock at least one API key in the sidebar.")
     else:
-        # header=None ensures Row 1 (8.8.8.8) is scanned
-        df_raw = pd.read_csv(uploaded_file, header=None)
-        ips = df_raw.iloc[:, 0].astype(str).str.strip().tolist()
+        # Load IPs (header=None ensuring first row 8.8.8.8 is scanned)
+        df_in = pd.read_csv(uploaded_file, header=None)
+        ips = df_in.iloc[:, 0].astype(str).str.strip().tolist()
         
         results = []
         progress = st.progress(0)
-        status_msg = st.empty()
+        status_box = st.empty()
 
         for i, ip in enumerate(ips):
-            clean_ip = ip.replace('"', '').replace("'", "")
-            status_msg.markdown(f"🔍 **Forensics:** `{clean_ip}` ({i+1}/{len(ips)})")
-            
-            # Expanded Forensic Fields
+            status_box.markdown(f"🔍 **Scanning:** `{ip}` ({i+1}/{len(ips)})")
+            # Aggregating all forensic info into one record
             intel = {
-                "IP": clean_ip, "Status": "Clean", "Country": "Unknown", "ISP": "Unknown",
-                "ASN": "N/A", "Network": "N/A", "Registry": "N/A", "Reputation": 0,
-                "Last Analysis": "Never", "Abuse Score": 0, "VT Hits": 0, "Lat": 20.0, "Lon": 0.0
+                "IP": ip, "Status": "Clean", "Abuse Score": 0, "VT Hits": 0,
+                "ISP": "Unknown", "ASN": "N/A", "Network": "N/A", "Reputation": 0,
+                "Last Analysis": "Never", "Lat": 20.0, "Lon": 0.0
             }
 
-            # 1. AbuseIPDB Engine
+            # 1. AbuseIPDB
             if st.session_state["AbuseIPDB_key"]:
                 try:
-                    r = requests.get("https://api.abuseipdb.com/api/v2/check", 
-                                     headers={"Key": st.session_state["AbuseIPDB_key"], "Accept":"application/json"},
-                                     params={"ipAddress": clean_ip}).json()
-                    data = r.get('data', {})
-                    intel["Abuse Score"] = data.get('abuseConfidenceScore', 0)
-                    intel["ISP"] = data.get('isp', 'Unknown')
-                    intel["Country"] = data.get('countryName', 'Unknown')
-                    intel["Lat"], intel["Lon"] = data.get('latitude'), data.get('longitude')
+                    r = requests.get("https://api.abuseipdb.com/api/v2/check", headers={"Key": st.session_state["AbuseIPDB_key"], "Accept":"application/json"}, params={"ipAddress": ip}).json()
+                    intel["Abuse Score"] = r['data'].get('abuseConfidenceScore', 0)
+                    intel["ISP"] = r['data'].get('isp', 'Unknown')
+                    intel["Lat"], intel["Lon"] = r['data'].get('latitude'), r['data'].get('longitude')
                 except: pass
 
-            # 2. VirusTotal Engine
+            # 2. VirusTotal
             if st.session_state["VirusTotal_key"]:
                 try:
-                    r = requests.get(f"https://www.virustotal.com/api/v3/ip_addresses/{clean_ip}", 
-                                     headers={"x-apikey": st.session_state["VirusTotal_key"]}).json()
+                    r = requests.get(f"https://www.virustotal.com/api/v3/ip_addresses/{ip}", headers={"x-apikey": st.session_state["VirusTotal_key"]}).json()
                     attr = r['data']['attributes']
                     intel["VT Hits"] = attr['last_analysis_stats'].get('malicious', 0)
                     intel["ASN"] = f"AS{attr.get('asn', 'N/A')}"
                     intel["Network"] = attr.get('network', 'N/A')
                     intel["Reputation"] = attr.get('reputation', 0)
-                    intel["Registry"] = attr.get('regional_internet_registry', 'N/A')
-                    last_ts = attr.get('last_analysis_date', 0)
-                    intel["Last Analysis"] = time.strftime('%Y-%m-%d %H:%M', time.gmtime(last_ts)) if last_ts else "Never"
                 except: pass
 
-            # Global Logic
-            if intel["Abuse Score"] > 25 or intel["VT Hits"] > 0:
-                intel["Status"] = "🚨 Malicious"
-            
+            if intel["Abuse Score"] > 25 or intel["VT Hits"] > 0: intel["Status"] = "🚨 Malicious"
             results.append(intel)
             progress.progress((i + 1) / len(ips))
             time.sleep(0.1)
 
         st.session_state.scan_results = pd.DataFrame(results)
-        status_msg.empty()
+        status_box.empty()
 
-# --- Reports & Visualization ---
+# --- Outputs & Reports ---
 if st.session_state.scan_results is not None:
     res = st.session_state.scan_results
-    res.index = res.index + 1 # S.No starts from 1
+    res.index = res.index + 1
     res.index.name = "S.No"
 
     # Summary Metrics
     m1, m2, m3 = st.columns(3)
-    m1.markdown(f"<div class='metric-card'><b>Total IPs</b><br><h2 style='color:#00ffcc;'>{len(res)}</h2></div>", unsafe_allow_html=True)
-    m2.markdown(f"<div class='metric-card'><b>Malicious</b><br><h2 style='color:#ff4b4b;'>{len(res[res['Status'] != 'Clean'])}</h2></div>", unsafe_allow_html=True)
-    m3.markdown(f"<div class='metric-card'><b>Safe</b><br><h2 style='color:#00ffcc;'>{len(res[res['Status'] == 'Clean'])}</h2></div>", unsafe_allow_html=True)
+    m1.metric("Total IPs", len(res))
+    m2.metric("Malicious Found", len(res[res['Status'] != 'Clean']))
+    m3.metric("Safe Results", len(res[res['Status'] == 'Clean']))
 
-    # Geographic Threat Origin
+    # Threat Origin Map
     st.subheader("🌐 Geographic Threat Origin")
     m = folium.Map(location=[20, 0], zoom_start=2, tiles="CartoDB dark_matter")
     for _, r in res.iterrows():
-        pt_color = 'red' if r['Status'] != 'Clean' else '#00ffcc'
-        folium.CircleMarker([r['Lat'], r['Lon']], radius=8, color=pt_color, fill=True).add_to(m)
+        folium.CircleMarker([r['Lat'], r['Lon']], radius=8, color='red' if r['Status'] != 'Clean' else '#00ffcc', fill=True).add_to(m)
     st_folium(m, width=1200, height=500)
 
-    # Detailed Forensic Table
-    st.subheader("📋 Detailed Intelligence Report")
+    # Intelligence Report
+    st.subheader("📋 Forensic Intelligence Report")
     st.dataframe(res.drop(columns=['Lat', 'Lon']), use_container_width=True)
-    
-    st.download_button("📥 DOWNLOAD CSV REPORT", data=res.to_csv(index=True).encode('utf-8'), file_name="ViperIntel_Report.csv", mime="text/csv")
+    st.download_button("📥 DOWNLOAD REPORT", data=res.to_csv(index=True).encode('utf-8'), file_name="ViperIntel_Report.csv", mime="text/csv")
 
-# --- Footer ---
 st.markdown(f"""<div style="text-align: center; padding: 20px; color: #666;">© 2026 ViperIntel Pro | Developed by <a href="https://maveera.tech" target="_blank" style="color:#00ffcc; text-decoration:none;">Maveera</a></div>""", unsafe_allow_html=True)
