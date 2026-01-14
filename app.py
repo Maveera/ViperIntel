@@ -5,29 +5,69 @@ import time
 import folium
 from streamlit_folium import st_folium
 
-# --- Page Config ---
+# ---------------- PAGE CONFIG ----------------
 st.set_page_config(
     page_title="ViperIntel Pro | By Maveera",
     page_icon="🛡️",
     layout="wide"
 )
 
-# --- Session State Management ---
-engines = ["AbuseIPDB", "VirusTotal", "AlienVault OTX", "IPQualityScore"]
-for e in engines:
-    if f"{e}_key" not in st.session_state:
-        st.session_state[f"{e}_key"] = ""
-    if f"{e}_locked" not in st.session_state:
-        st.session_state[f"{e}_locked"] = False
+# ---------------- GLOBAL TI CATALOG ----------------
+ALL_TI_ENGINES = [
+    # Reputation / Abuse
+    "AbuseIPDB",
+    "IPQualityScore",
+    "GreyNoise",
+    "Spamhaus",
+    "Project Honey Pot",
+    "IPInfo",
+    "MaxMind",
+    "Spur.us",
 
-if "scan_results" not in st.session_state:
-    st.session_state.scan_results = None
+    # Malware / IOC
+    "VirusTotal",
+    "Hybrid Analysis",
+    "MalwareBazaar",
+    "Any.Run",
+    "Joe Sandbox",
 
-# --- Styling ---
+    # Open Feeds
+    "AlienVault OTX",
+    "MISP",
+    "OpenPhish",
+    "PhishTank",
+    "URLhaus",
+    "CIRCL",
+
+    # Enterprise TI
+    "Recorded Future",
+    "Cisco Talos",
+    "IBM X-Force",
+    "Microsoft Defender TI",
+    "CrowdStrike Falcon",
+    "Kaspersky TI",
+    "Check Point ThreatCloud"
+]
+
+# APIs actually implemented
+SUPPORTED_TI = ["AbuseIPDB", "VirusTotal"]
+
+MAX_VISIBLE_TI = 3
+
+# ---------------- SESSION STATE ----------------
+if "active_ti" not in st.session_state:
+    st.session_state.active_ti = ALL_TI_ENGINES[:MAX_VISIBLE_TI]
+
+for ti in ALL_TI_ENGINES:
+    st.session_state.setdefault(f"{ti}_key", "")
+    st.session_state.setdefault(f"{ti}_locked", False)
+
+st.session_state.setdefault("scan_results", None)
+
+# ---------------- STYLES ----------------
 st.markdown("""
 <style>
 .stApp { background-color: #0a0e14; color: #e0e6ed; }
-.author-text { color: #00ffcc; font-weight: bold; font-size: 18px; }
 footer { visibility: hidden; }
 
 .key-freeze-row {
@@ -38,14 +78,6 @@ footer { visibility: hidden; }
     color: #8b949e;
     letter-spacing: 2px;
     font-family: monospace;
-}
-
-.metric-card {
-    background: #161b22;
-    padding: 20px;
-    border-radius: 10px;
-    border: 1px solid #1f2937;
-    text-align: center;
 }
 
 .custom-footer {
@@ -63,108 +95,103 @@ footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- Header ---
+# ---------------- HEADER ----------------
 st.title("🛡️ ViperIntel Pro")
 st.markdown("#### Universal Threat Intelligence & Forensic Aggregator")
 
-# --- Sidebar ---
+# ---------------- SIDEBAR ----------------
 with st.sidebar:
     st.markdown("## 🛡️ TI Command Center")
-    st.divider()
     st.subheader("🔑 Global API Configuration")
 
-    def api_input(label, session_key):
-        if not st.session_state[f"{session_key}_locked"]:
-            val = st.text_input(label, type="password", key=f"inp_{session_key}")
+    def api_input(ti):
+        if not st.session_state[f"{ti}_locked"]:
+            val = st.text_input(f"{ti} Key", type="password", key=f"inp_{ti}")
             if val:
-                st.session_state[f"{session_key}_key"] = val
-                st.session_state[f"{session_key}_locked"] = True
+                st.session_state[f"{ti}_key"] = val
+                st.session_state[f"{ti}_locked"] = True
                 st.rerun()
         else:
-            st.markdown(f"**{label}**")
-            col_dots, col_edit = st.columns([3, 1])
-            with col_dots:
+            col_mask, col_edit = st.columns([3, 1])
+            with col_mask:
                 st.markdown("<div class='key-freeze-row'>••••••••••••••••</div>", unsafe_allow_html=True)
             with col_edit:
-                if st.button("Edit", key=f"btn_{session_key}"):
-                    st.session_state[f"{session_key}_locked"] = False
+                if st.button("Edit", key=f"edit_{ti}"):
+                    st.session_state[f"{ti}_locked"] = False
                     st.rerun()
 
-    for engine in engines:
-        api_input(f"{engine} Key", engine)
+    # Show active TI (max 3)
+    for ti in st.session_state.active_ti:
+        api_input(ti)
 
-# --- Upload ---
+    # Add more TI
+    remaining_ti = [ti for ti in ALL_TI_ENGINES if ti not in st.session_state.active_ti]
+    if remaining_ti:
+        st.divider()
+        add_ti = st.selectbox("➕ Add Threat Intelligence Source", ["Select TI"] + remaining_ti)
+        if add_ti != "Select TI":
+            st.session_state.active_ti.append(add_ti)
+            st.rerun()
+
+# ---------------- FILE UPLOAD ----------------
 uploaded_file = st.file_uploader("Upload CSV (IPs in first column)", type=["csv"])
 
-# --- Execute Scan (API REQUIRED) ---
+# ---------------- EXECUTE SCAN ----------------
 if st.button("⚡ EXECUTE DEEP SCAN"):
+    active_supported = [
+        ti for ti in st.session_state.active_ti
+        if ti in SUPPORTED_TI and st.session_state[f"{ti}_key"]
+    ]
 
-    # 🔒 HARD GATE: API REQUIRED
-    if not any([st.session_state[f"{e}_key"] for e in engines]):
-        st.error("❌ No API key configured. Please add at least one Threat Intelligence API to execute scan.")
-    
+    if not active_supported:
+        st.error("❌ No supported TI API configured. Add at least one valid API (AbuseIPDB or VirusTotal).")
     elif not uploaded_file:
-        st.error("❌ Please upload a CSV file containing IP addresses.")
-
+        st.error("❌ Please upload a CSV file with IP addresses.")
     else:
-        df_raw = pd.read_csv(uploaded_file, header=None)
-        ips = df_raw.iloc[:, 0].astype(str).str.strip().tolist()
+        df = pd.read_csv(uploaded_file, header=None)
+        ips = df.iloc[:, 0].astype(str).str.strip().tolist()
 
         results = []
         progress = st.progress(0)
-        status_msg = st.empty()
+        status = st.empty()
 
         for i, ip in enumerate(ips):
-            status_msg.markdown(f"🔍 **Analyzing:** `{ip}` ({i+1}/{len(ips)})")
+            status.markdown(f"🔍 **Analyzing:** `{ip}` ({i+1}/{len(ips)})")
 
             intel = {
                 "IP": ip,
                 "Status": "Clean",
-                "Country": "Unknown",
-                "ISP": "Unknown",
                 "Abuse Score": 0,
                 "VT Hits": 0,
                 "Lat": None,
                 "Lon": None
             }
 
-            # --- AbuseIPDB ---
-            if st.session_state["AbuseIPDB_key"]:
+            if "AbuseIPDB" in active_supported:
                 try:
                     r = requests.get(
                         "https://api.abuseipdb.com/api/v2/check",
-                        headers={
-                            "Key": st.session_state["AbuseIPDB_key"],
-                            "Accept": "application/json"
-                        },
+                        headers={"Key": st.session_state["AbuseIPDB_key"], "Accept": "application/json"},
                         params={"ipAddress": ip},
                         timeout=10
                     ).json()
-
                     data = r.get("data", {})
                     intel["Abuse Score"] = data.get("abuseConfidenceScore", 0)
-                    intel["Country"] = data.get("countryName", "Unknown")
-                    intel["ISP"] = data.get("isp", "Unknown")
-                    intel["Lat"] = data.get("latitude")
-                    intel["Lon"] = data.get("longitude")
+                    intel["Lat"], intel["Lon"] = data.get("latitude"), data.get("longitude")
                 except:
                     pass
 
-            # --- VirusTotal ---
-            if st.session_state["VirusTotal_key"]:
+            if "VirusTotal" in active_supported:
                 try:
                     r = requests.get(
                         f"https://www.virustotal.com/api/v3/ip_addresses/{ip}",
                         headers={"x-apikey": st.session_state["VirusTotal_key"]},
                         timeout=10
                     ).json()
-
-                    attr = r["data"]["attributes"]
-                    intel["VT Hits"] = attr["last_analysis_stats"].get("malicious", 0)
+                    intel["VT Hits"] = r["data"]["attributes"]["last_analysis_stats"].get("malicious", 0)
                 except:
                     pass
 
-            # --- Final Status ---
             if intel["Abuse Score"] > 25 or intel["VT Hits"] > 0:
                 intel["Status"] = "🚨 Malicious"
 
@@ -173,9 +200,9 @@ if st.button("⚡ EXECUTE DEEP SCAN"):
             time.sleep(0.1)
 
         st.session_state.scan_results = pd.DataFrame(results)
-        status_msg.empty()
+        status.empty()
 
-# --- Results ---
+# ---------------- RESULTS ----------------
 if st.session_state.scan_results is not None:
     res = st.session_state.scan_results.copy()
     res.index = res.index + 1
@@ -196,7 +223,7 @@ if st.session_state.scan_results is not None:
             ).add_to(m)
     st_folium(m, width=1200, height=450)
 
-# --- Footer ---
+# ---------------- FOOTER ----------------
 st.markdown("""
 <div class="custom-footer">
 © 2026 <b>ViperIntel Pro</b> | All Rights Reserved
