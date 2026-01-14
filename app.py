@@ -33,18 +33,33 @@ def audit(action):
     with open(AUDIT_FILE, "a") as f:
         f.write(f"{datetime.utcnow().isoformat()}Z | {action}\n")
 
-# ================= TI =================
+# ================= GLOBAL TI LIST =================
 ALL_TI_ENGINES = [
-    "AbuseIPDB", "VirusTotal", "AlienVault OTX",
-    "IPQualityScore", "GreyNoise", "Spamhaus",
-    "Recorded Future", "Cisco Talos", "IBM X-Force"
+    # Reputation / IP
+    "AbuseIPDB", "IPQualityScore", "GreyNoise", "Spamhaus",
+    "Project Honey Pot", "IPInfo", "MaxMind", "Spur.us",
+
+    # Malware / IOC
+    "VirusTotal", "Hybrid Analysis", "Any.Run", "Joe Sandbox",
+    "MalwareBazaar", "VirusShare",
+
+    # Phishing / URL
+    "OpenPhish", "PhishTank", "URLhaus", "Google Safe Browsing",
+
+    # Open / Community
+    "AlienVault OTX", "MISP", "CIRCL", "ThreatFox",
+
+    # Enterprise
+    "Microsoft Defender TI", "IBM X-Force", "Cisco Talos",
+    "Palo Alto Unit42", "CrowdStrike Falcon",
+    "Recorded Future", "Kaspersky TI", "Check Point ThreatCloud"
 ]
 
 SUPPORTED_TI = ["AbuseIPDB", "VirusTotal"]
 
 DEFAULT_CONFIG = {
-    "active_ti": ALL_TI_ENGINES[:3],
-    "inactive_ti": ALL_TI_ENGINES[3:],
+    "active_ti": ["AbuseIPDB", "VirusTotal", "AlienVault OTX"],
+    "inactive_ti": [ti for ti in ALL_TI_ENGINES if ti not in ["AbuseIPDB", "VirusTotal", "AlienVault OTX"]],
     "keys": {},
     "locked": {}
 }
@@ -62,7 +77,7 @@ def load_config():
     for ti, enc in cfg.get("keys", {}).items():
         dec = decrypt_safe(enc)
         if dec is None:
-            audit(f"Invalid token for {ti}, key reset")
+            audit(f"Invalid token for {ti} – key reset")
             clean_keys[ti] = ""
             clean_locked[ti] = False
         else:
@@ -144,7 +159,7 @@ with st.sidebar:
         st.divider()
         add_ti = st.selectbox(
             "➕ Add Threat Intelligence Source",
-            ["Select TI"] + st.session_state.inactive_ti
+            ["Select TI"] + sorted(st.session_state.inactive_ti)
         )
         if add_ti != "Select TI":
             st.session_state.inactive_ti.remove(add_ti)
@@ -152,6 +167,21 @@ with st.sidebar:
             audit(f"{add_ti} added to active")
             save_config()
             st.rerun()
+
+    # ☕ Buy Me a Coffee
+    st.divider()
+    st.markdown(
+        """
+        <a href="https://www.buymeacoffee.com/maveera" target="_blank"
+        style="display:block;text-align:center;
+        background:#FFDD00;color:#000;
+        padding:10px;border-radius:8px;
+        font-weight:bold;text-decoration:none;">
+        ☕ Buy Me a Coffee
+        </a>
+        """,
+        unsafe_allow_html=True
+    )
 
     st.divider()
     if st.button("🧹 Clear Scan Data"):
@@ -173,7 +203,7 @@ if st.button("⚡ EXECUTE DEEP SCAN"):
     ]
 
     if not active_supported:
-        st.error("❌ At least one supported TI API is required.")
+        st.error("❌ At least one supported TI API (AbuseIPDB or VirusTotal) is required.")
     elif not st.session_state.uploaded_file:
         st.error("❌ Please upload a CSV file.")
     else:
