@@ -8,9 +8,8 @@ from streamlit_folium import st_folium
 # --- Page Config ---
 st.set_page_config(page_title="ViperIntel Pro | By Maveera", page_icon="🐍", layout="wide")
 
-# --- Session State for Advanced API Locking ---
-# This ensures keys freeze upon hitting Enter
-engines = ["AbuseIPDB", "VirusTotal", "AlienVault OTX", "IPQualityScore", "Shodan", "GreyNoise", "Cisco Talos"]
+# --- Session State for API Locking & Results ---
+engines = ["AbuseIPDB", "VirusTotal", "AlienVault OTX", "IPQualityScore"]
 for engine in engines:
     if f"{engine}_key" not in st.session_state:
         st.session_state[f"{engine}_key"] = ""
@@ -45,7 +44,7 @@ st.markdown("""
         box-shadow: 0px 0px 20px #00ffcc;
     }
 
-    /* Reset Button */
+    /* Top-Right Reset Button */
     .stButton > button[kind="secondary"] {
         background-color: transparent !important;
         color: #ff4b4b !important;
@@ -81,11 +80,11 @@ with st.sidebar:
     st.divider()
     st.subheader("🔑 Global API Configuration")
 
-    # Dynamic API Key Input with Automatic Freeze
     def api_input(label, session_key):
         if not st.session_state[f"{session_key}_locked"]:
+            # Logic: If user types and hits enter, it freezes
             val = st.text_input(label, type="password", key=f"inp_{session_key}")
-            if val: # If user hits Enter
+            if val:
                 st.session_state[f"{session_key}_key"] = val
                 st.session_state[f"{session_key}_locked"] = True
                 st.rerun()
@@ -96,30 +95,25 @@ with st.sidebar:
                 st.session_state[f"{session_key}_locked"] = False
                 st.rerun()
 
-    # Expandable Support for all major TI engines
     api_input("AbuseIPDB Key", "AbuseIPDB")
     api_input("VirusTotal Key", "VirusTotal")
     api_input("AlienVault OTX Key", "AlienVault OTX")
     api_input("IPQualityScore Key", "IPQualityScore")
-    
-    with st.expander("More Engines (Enterprise)"):
-        api_input("Shodan Key", "Shodan")
-        api_input("GreyNoise Key", "GreyNoise")
-        api_input("Cisco Talos Key", "Cisco Talos")
 
     st.divider()
     st.markdown('<a href="https://www.buymeacoffee.com/maveera" target="_blank" style="display:block; background:#FFDD00; color:black; padding:10px; border-radius:5px; text-align:center; text-decoration:none; font-weight:bold;">☕ Support Maveera</a>', unsafe_allow_html=True)
 
-# --- Main Scan Logic ---
+# --- Main Scan Engine ---
 uploaded_file = st.file_uploader("Upload CSV (IPs in first column)", type=["csv"])
 
 if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
-    # Check if at least one key is active
-    if not any([st.session_state[f"{e}_key"] for e in engines]):
-        st.error("❌ Please enter and hit 'Enter' on at least one API key.")
+    active_keys = [st.session_state[f"{e}_key"] for e in engines]
+    if not any(active_keys):
+        st.error("❌ Please enter and hit 'Enter' on at least one API key in the sidebar.")
     else:
-        df = pd.read_csv(uploaded_file)
-        ips = df.iloc[:, 0].dropna().tolist() # Processes all rows
+        df_input = pd.read_csv(uploaded_file)
+        # Fix: Direct list processing ensuring 5 IPs result in 5 scans
+        ips = df_input.iloc[:, 0].dropna().tolist()
         
         results = []
         progress = st.progress(0)
@@ -127,9 +121,9 @@ if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
 
         for i, ip in enumerate(ips):
             status.markdown(f"🔍 **Analyzing:** `{ip}` ({i+1}/{len(ips)})")
-            intel = {"IP": ip, "Status": "Clean", "Lat": 20.0, "Lon": 0.0}
+            intel = {"IP": ip, "Status": "Clean", "Country": "Unknown", "Lat": 20.0, "Lon": 0.0}
 
-            # 1. AbuseIPDB
+            # 1. AbuseIPDB Engine
             if st.session_state["AbuseIPDB_key"]:
                 try:
                     r = requests.get("https://api.abuseipdb.com/api/v2/check", 
@@ -137,16 +131,18 @@ if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
                                      params={"ipAddress": ip}).json()
                     intel["Abuse Score"] = r['data'].get('abuseConfidenceScore', 0)
                     intel["Lat"], intel["Lon"] = r['data'].get('latitude'), r['data'].get('longitude')
+                    intel["Country"] = r['data'].get('countryName', 'Unknown')
+                    intel["Domain"] = r['data'].get('domain', 'N/A')
                 except: intel["Abuse Score"] = 0
 
-            # 2. VirusTotal
+            # 2. VirusTotal Engine
             if st.session_state["VirusTotal_key"]:
                 try:
                     r = requests.get(f"https://www.virustotal.com/api/v3/ip_addresses/{ip}", 
                                      headers={"x-apikey": st.session_state["VirusTotal_key"]}).json()
-                    vt_hits = r['data']['attributes']['last_analysis_stats'].get('malicious', 0)
-                    intel["VT Hits"] = vt_hits
-                    if vt_hits > 0: intel["Status"] = "🚨 Malicious"
+                    stats = r['data']['attributes']['last_analysis_stats']
+                    intel["VT Hits"] = stats.get('malicious', 0)
+                    if intel["VT Hits"] > 0: intel["Status"] = "🚨 Malicious"
                 except: intel["VT Hits"] = 0
 
             # Logic check
@@ -159,16 +155,21 @@ if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
         st.session_state.scan_results = pd.DataFrame(results)
         status.empty()
 
-# --- Outputs ---
+# --- Outputs & Reports ---
 if st.session_state.scan_results is not None:
     res = st.session_state.scan_results
-    mal = len(res[res["Status"] == "🚨 Malicious"])
+    
+    # Fix: S.No starts from 1
+    res.index = res.index + 1
+    res.index.name = "S.No"
 
+    mal_count = len(res[res["Status"] == "🚨 Malicious"])
     m1, m2, m3 = st.columns(3)
     m1.markdown(f"<div class='metric-card'><b>Total IPs Scanned</b><br><h2 style='color:#00ffcc;'>{len(res)}</h2></div>", unsafe_allow_html=True)
-    m2.markdown(f"<div class='metric-card'><b>Malicious Detected</b><br><h2 style='color:#ff4b4b;'>{mal}</h2></div>", unsafe_allow_html=True)
-    m3.markdown(f"<div class='metric-card'><b>Safe Results</b><br><h2 style='color:#00ffcc;'>{len(res)-mal}</h2></div>", unsafe_allow_html=True)
+    m2.markdown(f"<div class='metric-card'><b>Malicious Detected</b><br><h2 style='color:#ff4b4b;'>{mal_count}</h2></div>", unsafe_allow_html=True)
+    m3.markdown(f"<div class='metric-card'><b>Safe Results</b><br><h2 style='color:#00ffcc;'>{len(res)-mal_count}</h2></div>", unsafe_allow_html=True)
 
+    # Geographic Threat Map
     st.subheader("🌐 Geographic Threat Origin")
     m = folium.Map(location=[20, 0], zoom_start=2, tiles="CartoDB dark_matter")
     for _, r in res.iterrows():
@@ -176,8 +177,11 @@ if st.session_state.scan_results is not None:
         folium.CircleMarker([r['Lat'], r['Lon']], radius=8, color=color, fill=True).add_to(m)
     st_folium(m, width=1200, height=500)
 
-    st.subheader("📋 Intelligence Report")
+    # Detailed Intelligence Report
+    st.subheader("📋 Detailed Intelligence Report")
     st.dataframe(res.drop(columns=['Lat', 'Lon']), use_container_width=True)
-    st.download_button("📥 DOWNLOAD CSV", data=res.to_csv(index=False).encode('utf-8'), file_name="ViperIntel_Report.csv", mime="text/csv")
+    
+    csv = res.to_csv(index=True).encode('utf-8')
+    st.download_button("📥 DOWNLOAD CSV", data=csv, file_name="ViperIntel_Report.csv", mime="text/csv")
 
-st.markdown(f"""<div class="custom-footer">© 2026 ViperIntel Pro | Developed by <a href="https://maveera.tech" target="_blank" style="color:#00ffcc;">Maveera</a></div>""", unsafe_allow_html=True)
+st.markdown(f"""<div class="custom-footer">© 2026 ViperIntel Pro | Developed by <a href="https://maveera.tech" target="_blank" style="color:#00ffcc; text-decoration:none;">Maveera</a></div>""", unsafe_allow_html=True)
