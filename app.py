@@ -34,7 +34,7 @@ st.markdown("""
         box-shadow: 0px 0px 15px #00ffcc;
     }
 
-    /* Fixed Live Key Freeze Row */
+    /* Fixed Live Key Freeze Row Styling */
     .key-freeze-row {
         background-color: rgba(255, 255, 255, 0.05);
         border: 1px solid rgba(255, 255, 255, 0.1);
@@ -79,14 +79,13 @@ with st.sidebar:
                 st.session_state[f"{session_key}_locked"] = True
                 st.rerun()
         else:
-            # Layout Fix: Forced Single Line
+            # Layout Fix: Forced Single Line with st.columns
             st.markdown(f"**{label}**")
-            # We use columns within the sidebar to force the button to the far right on the same line
-            col_dots, col_edit = st.columns([4, 1.2])
+            col_dots, col_edit = st.columns([4, 1.2]) # Adjusted ratio to prevent button wrapping
             with col_dots:
-                st.markdown("""<div style="background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:8px; color:#8b949e; letter-spacing:2px;">••••••••••••••••</div>""", unsafe_allow_html=True)
+                st.markdown("""<div style="background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:8px; color:#8b949e; letter-spacing:2px; overflow:hidden;">••••••••••••••••</div>""", unsafe_allow_html=True)
             with col_edit:
-                if st.button("Edit", key=f"btn_{session_key}"):
+                if st.button("Edit", key=f"btn_{session_key}", use_container_width=True):
                     st.session_state[f"{session_key}_locked"] = False
                     st.rerun()
 
@@ -117,14 +116,13 @@ if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
     for i, ip in enumerate(ips):
         status_msg.markdown(f"🔍 **Analyzing:** `{ip}` ({i+1}/{len(ips)})")
         
-        # Comprehensive forensics from Image 2
         intel = {
             "IP": ip, "Status": "Clean", "Country": "Unknown", "ISP": "Unknown",
             "ASN": "N/A", "Network": "N/A", "Reputation": 0,
             "Last Analysis": "Never", "Abuse Score": 0, "VT Hits": 0, "Lat": 20.0, "Lon": 0.0
         }
 
-        # 1. AbuseIPDB
+        # API Logic - AbuseIPDB
         if st.session_state["AbuseIPDB_key"]:
             try:
                 r = requests.get("https://api.abuseipdb.com/api/v2/check", headers={"Key": st.session_state["AbuseIPDB_key"], "Accept":"application/json"}, params={"ipAddress": ip}).json()
@@ -135,7 +133,7 @@ if st.button("⚡ EXECUTE DEEP SCAN") and uploaded_file:
                 intel["Lat"], intel["Lon"] = data.get('latitude'), data.get('longitude')
             except: pass
 
-        # 2. VirusTotal
+        # API Logic - VirusTotal
         if st.session_state["VirusTotal_key"]:
             try:
                 r = requests.get(f"https://www.virustotal.com/api/v3/ip_addresses/{ip}", headers={"x-apikey": st.session_state["VirusTotal_key"]}).json()
