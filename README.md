@@ -22,14 +22,14 @@
 ## 🛠️ Quick Start
 
 ### For Users
-1. Access the web app: `[PASTE_YOUR_STREAMLIT_LINK_HERE]`
+1. Access the web app: https://viper-intel.streamlit.app/
 2. Enter your API keys in the sidebar.
 3. Upload a CSV of IPs and hit **Execute Deep Scan**.
 
 ### For Developers (Local Install)
 ```bash
 # Clone the repo
-git clone [https://github.com/yourusername/viperintel-pro.git](https://github.com/yourusername/viperintel-pro.git)
+git clone https://github.com/Maveera/ViperIntel.git
 
 # Install requirements
 pip install -r requirements.txt
@@ -44,3 +44,5 @@ AbuseIPDB API
 VirusTotal API
 AlienVault OTX
 IPQualityScore
+
+More than 20+ IT avaiable's
