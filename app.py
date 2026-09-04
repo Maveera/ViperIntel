@@ -1,700 +1,742 @@
-import streamlit as st
-import pandas as pd
+"""
+Viper Intel - SOC Threat Intelligence Scanner
+
+Bulk IP / Hash / Domain / URL / CVE analysis against configurable
+threat-intelligence feeds (VirusTotal, AbuseIPDB, AlienVault OTX,
+GreyNoise, Shodan, URLScan.io, NVD, CISA KEV, EPSS).
+
+No hardcoded secrets. API keys are supplied via the sidebar at runtime,
+or via Streamlit secrets / environment variables for deployments.
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
 import json
-import time
+import os
 import re
-from datetime import datetime, timezone
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List, Optional, Tuple
 
-from core.detector import (
-    detect_ioc_type,
-    validate_ioc,
-    IOC_TYPES,
-    IOC_LABELS,
-    parse_bulk_file,
-    is_public_ip,
+import pandas as pd
+import pydeck as pdk
+import streamlit as st
+
+from core.detector import detect_ioc_type, parse_bulk_file, validate_ioc
+from core.providers import (
+    PROVIDER_CATALOG,
+    build_providers,
+    configured_providers_for_type,
+    get_api_key,
 )
-from core.risk_engine import score_ioc, aggregate_bulk_scores
-from core.ai_engine import analyze, render_markdown_report
-from core.offline_intel import DEFAULT_REGIONS, ORGANIC_IP_POOL
-
-# ================= PAGE CONFIG & METADATA =================
-st.set_page_config(
-    page_title="Viper Intel - SOC Threat Intelligence",
-    page_icon="\U0001f40d",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-# ================= DARK SOC THEME =================
-st.markdown(
-    """
-    <style>
-    :root {
-        --viper-bg: #0a0e14;
-        --viper-panel: #111722;
-        --viper-border: #1f2937;
-        --viper-accent: #00ffcc;
-        --viper-green: #00ff88;
-        --viper-amber: #ffaa00;
-        --viper-red: #ff4444;
-        --viper-text: #e5e7eb;
-    }
-    .stApp {
-        background-color: #0a0e14;
-        color: #e5e7eb;
-    }
-    .block-container { padding-top: 1.2rem; padding-bottom: 4rem; }
-    h1, h2, h3 { color: #00ffcc !important; }
-    .viper-header {
-        display: flex; align-items: center; gap: 14px;
-        padding: 10px 16px; margin-bottom: 10px;
-        background: rgba(17,23,34,0.8); border: 1px solid #1f2937;
-        border-radius: 10px;
-    }
-    .viper-header .logo { font-size: 2.1rem; }
-    .viper-header .title { font-size: 1.45rem; font-weight: 800; color: #00ffcc; letter-spacing: 0.5px; }
-    .viper-header .subtitle { font-size: 0.82rem; color: #94a3b8; margin-top: 2px; }
-
-    .viper-card {
-        background: #111722; border: 1px solid #1f2937; border-radius: 10px;
-        padding: 16px 18px; margin-bottom: 12px;
-    }
-    .viper-card .card-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 1px; color: #94a3b8; }
-    .viper-card .card-value { font-size: 1.9rem; font-weight: 800; margin-top: 2px; }
-    .viper-card .card-sub { font-size: 0.78rem; color: #64748b; }
-
-    .verdict-clean { color:#00ff88; }
-    .verdict-low { color:#88ff00; }
-    .verdict-medium { color:#ffaa00; }
-    .verdict-high { color:#ff7733; }
-    .verdict-critical { color:#ff4444; }
-
-    .risk-badge {
-        display:inline-block; padding:6px 14px; border-radius:6px;
-        font-weight:700; font-size:0.95rem; border:1px solid;
-    }
-    .stButton>button {
-        background:#111722; color:#00ffcc; border:1px solid #00ffcc;
-        border-radius:6px; font-weight:600;
-    }
-    .stButton>button:hover { background:#0f1b2a; color:#66ffe0; border-color:#66ffe0; }
-    .stTabs [data-baseweb="tab-list"] { gap: 6px; }
-    .stTabs [data-baseweb="tab"] {
-        background:#111722; color:#94a3b8; border:1px solid #1f2937;
-        padding:6px 14px; border-radius:6px;
-    }
-    .stTabs [aria-selected="true"] { color:#00ffcc !important; border-color:#00ffcc !important; }
-    div[data-testid="stMetric"] {
-        background:#111722; border:1px solid #1f2937; border-radius:10px;
-        padding:12px 16px;
-    }
-    div[data-testid="stMetricValue"] { color:#00ffcc; }
-    footer { visibility: hidden; }
-    [data-testid="stSidebar"] { background:#0d1219 !important; border-right:1px solid #1f2937; }
-    [data-testid="stSidebar"] * { color:#cbd5e1; }
-    </style>
-    """,
-    unsafe_allow_html=True,
+from core.risk_engine import (
+    RiskScoreResult,
+    aggregate_bulk_scores,
+    score_from_providers,
+    score_offline_only,
 )
 
-# ================= SESSION STATE INIT =================
-if "page" not in st.session_state:
-    st.session_state.page = "Dashboard"
-if "history" not in st.session_state:
-    st.session_state.history = []
-if "watchlist" not in st.session_state:
-    st.session_state.watchlist = []
-if "last_investigation" not in st.session_state:
-    st.session_state.last_investigation = None
-if "bulk_results" not in st.session_state:
-    st.session_state.bulk_results = None
+st.set_page_config(page_title="Viper Intel", layout="wide",
+                   page_icon="🐍", initial_sidebar_state="expanded")
 
-NAV_ITEMS = [
-    "Dashboard",
-    "Investigate",
-    "Threat Map",
-    "Bulk Analysis",
-    "Watchlist",
-    "Investigation History",
-]
+APP_TAG = "v3.0 API scan"
 
-# ================= NAVIGATION =================
-with st.sidebar:
-    st.markdown("## \U0001f40d Viper Intel")
-    st.markdown("**SOC Threat Intelligence Suite**")
-    st.markdown("---")
 
-    selection = st.radio(
-        "Navigation",
-        NAV_ITEMS,
-        key="nav",
-        label_visibility="collapsed",
+# ---------------------------------------------------------------------------
+# Session helpers
+# ---------------------------------------------------------------------------
+
+def _s(key: str, default=None):
+    if key not in st.session_state:
+        st.session_state[key] = default
+    return st.session_state[key]
+
+
+def _init_state() -> None:
+    _s("history", [])
+    _s("watchlist", [])
+    _s("api_keys", {})
+    _s("providers", None)
+    _s("bulk_results", [])
+    _s("bulk_source", None)
+    _s("map_df", None)
+
+
+# ---------------------------------------------------------------------------
+# Horizontal space to mimic scores 0-100
+# ---------------------------------------------------------------------------
+
+VERDICT_HTML = {
+    "MALICIOUS": '<span style="background:#b91c1c;color:#fff;padding:1px 8px;border-radius:8px;font-weight:600;">MALICIOUS</span>',
+    "SUSPICIOUS": '<span style="background:#ea580c;color:#fff;padding:1px 8px;border-radius:8px;font-weight:600;">SUSPICIOUS</span>',
+    "LOW": '<span style="background:#facc15;color:#111;padding:1px 8px;border-radius:8px;font-weight:600;">LOW</span>',
+    "CLEAN": '<span style="background:#16a34a;color:#fff;padding:1px 8px;border-radius:8px;font-weight:600;">CLEAN</span>',
+    "UNKNOWN": '<span style="background:#6b7280;color:#fff;padding:1px 8px;border-radius:8px;font-weight:600;">UNKNOWN</span>',
+}
+
+PROVIDER_BADGE = {
+    "available": '<span style="color:#16a34a;">&#10004;</span>',
+    "unavailable": '<span style="color:#6b7280;">&#10005;</span>',
+    "error": '<span style="color:#ea580c;">&#9888;</span>',
+}
+
+
+def _score_bar_html(score: int) -> str:
+    score = max(0, min(100, score))
+    color = "#b91c1c" if score >= 80 else "#ea580c" if score >= 60 else \
+        "#facc15" if score >= 40 else "#16a34a"
+    return '<div style="background:#e5e7eb;border-radius:6px;width:110px;height:14px;">' \
+           '<div style="background:{};width:{}%;height:14px;border-radius:6px;"></div></div>'.format(
+               color, score)
+
+
+est = _dt.datetime.now()
+
+
+# ---------------------------------------------------------------------------
+# Sidebar: API key configuration (same as before - no hardcoded secrets)
+# ---------------------------------------------------------------------------
+
+def _encrypt_save(keys: Dict[str, str]) -> None:
+    try:
+        from cryptography.fernet import Fernet
+        key_file = ".secret.key"
+        if not os.path.exists(key_file):
+            with open(key_file, "wb") as f:
+                f.write(Fernet.generate_key())
+        with open(key_file, "rb") as f:
+            fkey = Fernet(f.read())
+        payload = fkey.encrypt(json.dumps(keys).encode())
+        with open("config.json", "wb") as f:
+            f.write(payload)
+        st.sidebar.success("API keys saved (encrypted: config.json)")
+    except Exception as e:
+        st.sidebar.error("Save failed: {}".format(e))
+
+
+def _decrypt_load() -> None:
+    try:
+        from cryptography.fernet import Fernet, InvalidToken
+        if not (os.path.exists("config.json") and os.path.exists(".secret.key")):
+            st.sidebar.info("No saved config found.")
+            return
+        with open(".secret.key", "rb") as f:
+            fkey = Fernet(f.read())
+        with open("config.json", "rb") as f:
+            payload = fkey.decrypt(f.read())
+        keys = json.loads(payload.decode())
+        cur = dict(_s("api_keys", {}))
+        cur.update(keys)
+        st.session_state["api_keys"] = cur
+        st.session_state["providers"] = None  # force rebuild
+        st.sidebar.success("API keys loaded from config.json")
+    except InvalidToken:
+        st.sidebar.error("config.json is corrupted or key mismatch")
+    except Exception as e:
+        st.sidebar.error("Load failed: {}".format(e))
+
+
+def render_sidebar() -> None:
+    st.sidebar.header("🐍 Viper Intel")
+    st.sidebar.caption(APP_TAG + " | " + est.strftime("%Y-%m-%d %H:%M"))
+
+    with st.sidebar.expander("🔑 API Key Configuration", expanded=True):
+        st.caption("Enter your threat-feed API keys. Keys are kept in-session "
+                   "(never committed). For cloud deployments, set the matching "
+                   "environment variable / Streamlit secret instead.")
+        keys = dict(_s("api_keys", {}))
+        for p in PROVIDER_CATALOG:
+            if not p["needs_key"]:
+                continue
+            val = keys.get(p["id"], "")
+            hint = os.getenv(p["key_hint"], "") or val
+            new_val = st.text_input(
+                p["name"], type="password", key="key_" + p["id"],
+                value=hint, help="{} | {}".format(p["key_hint"], p["free"]),
+            )
+            if new_val:
+                keys[p["id"]] = new_val.strip()
+        st.session_state["api_keys"] = keys
+        c1, c2 = st.columns(2)
+        if c1.button("💾 Save config"):
+            _encrypt_save(keys)
+        if c2.button("📂 Load config"):
+            _decrypt_load()
+
+    with st.sidebar.expander("🛰 TI Feeds Active", expanded=False):
+        provs = st.session_state.get("providers") or build_providers()
+        provs = _refresh_providers(provs)
+        rows = []
+        for p in PROVIDER_CATALOG:
+            prov = provs[p["id"]]
+            if not prov.needs_key:
+                rows.append([prov.name, "Always on", ", ".join(prov.types)])
+            else:
+                configured = prov.is_configured()
+                rows.append([prov.name, "✓ configured" if configured else "— key missing",
+                             ", ".join(prov.types)])
+        st.dataframe(pd.DataFrame(rows, columns=["Feed", "Status", "Supports"]),
+                     hide_index=True, height=260)
+
+    with st.sidebar.expander("ℹ About", expanded=False):
+        st.markdown(
+            "Viper Intel correlates configurable TI feeds to produce an "
+            "explainable **risk score (0-100)** and colour-coded verdict "
+            "table for bulk IOC triage.\n\n"
+            "**Scores**: 0-21 Clean · 22-39 Low · 40-59 Suspicious · 60+ Malicious")
+
+
+def _refresh_providers(provs: Dict[str, object]) -> Dict[str, object]:
+    """Re-read API keys into provider instances (cheap, re-reads session keys)."""
+    for pid, p in provs.items():
+        p.key = get_api_key(pid)
+    return provs
+
+
+# ---------------------------------------------------------------------------
+# IOC intake helpers
+# ---------------------------------------------------------------------------
+
+def collect_iocs(uploaded, paste_text: str) -> List[Tuple[str, Optional[str]]]:
+    items: List[Tuple[str, Optional[str]]] = []
+    if uploaded is not None:
+        raw = uploaded.read()
+        for enc in (uploaded.type and "utf-8" or None, "utf-8-sig", "latin-1"):
+            try:
+                content = raw.decode(enc)
+                break
+            except Exception:
+                continue
+        items.extend(parse_bulk_file(content))
+    if paste_text:
+        items.extend(parse_bulk_file(paste_text))
+    # drop empty and dedupe preserving order
+    seen = set()
+    out = []
+    for value, ioc_type in items:
+        value = value.strip()
+        if not value or value.lower() in seen:
+            continue
+        seen.add(value.lower())
+        out.append((value, ioc_type))
+    return out
+
+
+def _resolve_type(value: str, ioc_type: Optional[str]) -> Optional[str]:
+    if ioc_type:
+        return ioc_type
+    return detect_ioc_type(value)
+
+
+def _suggest_type_specific(value: str, guessed: Optional[str]) -> Optional[str]:
+    """For hashes: upgrade generic guess to exact hash type."""
+    if not guessed:
+        return None
+    if guessed in ("domain", "url"):
+        return guessed
+    if re.fullmatch(r"[0-9a-f]{32}", value, re.I):
+        return "md5"
+    if re.fullmatch(r"[0-9a-f]{40}", value, re.I):
+        return "sha1"
+    if re.fullmatch(r"[0-9a-f]{64}", value, re.I):
+        return "sha256"
+    return guessed
+
+
+# ---------------------------------------------------------------------------
+# Scanning
+# ---------------------------------------------------------------------------
+
+def scan_single(value: str, ioc_type: Optional[str], provs: Dict[str, object],
+                use_offline: bool = True) -> Optional[Dict]:
+    value = value.strip()
+    t = _suggest_type_specific(value, _resolve_type(value, ioc_type))
+    if not t:
+        return None
+    ok, _, _ = validate_ioc(value, t)
+    if not ok:
+        return None
+
+    configured = configured_providers_for_type(provs, t)
+    if configured:
+        results = []
+        for prov in configured:
+            results.append(prov.lookup(t, value))
+        r = score_from_providers(value, results, ioc_type=t)
+        country = _country_from_results(results)
+    elif use_offline:
+        r = score_offline_only(value, ioc_type=t)
+        country = ""
+    else:
+        r = RiskScoreResult(score=0, verdict="UNKNOWN", severity="?", factors=[],
+                            explanation=["No TI feed configured for type {}.".format(t)])
+        r.providers = []
+        country = ""
+
+    hits = [p for p in r.providers if p.available and p.verdict in ("malicious", "suspicious")]
+    feeds_checked = len(r.providers)
+    return {
+        "ioc": value,
+        "type": t,
+        "verdict": r.verdict,
+        "severity": r.severity,
+        "score": r.score,
+        "confidence": r.confidence,
+        "entropy": r.entropy,
+        "feeds_checked": feeds_checked,
+        "feed_hits": len(hits),
+        "summary": _summarize(r),
+        "factors": [f.name for f in r.factors if f.points > 0],
+        "mitre": r.mitre_techniques,
+        "detail": r,
+        "country": country,
+    }
+
+
+def _country_from_results(results: List[Dict]) -> str:
+    for r in results:
+        data = r.get("data", {}) or {}
+        cc = (data.get("country") or data.get("country_code") or "").upper()
+        cc = cc.split("-")[-1] if cc and "-" in cc else cc
+        if cc and len(cc) == 2:
+            return cc
+    return ""
+
+
+def _summarize(r: RiskScoreResult) -> str:
+    if r.explanation:
+        text = "\n".join(r.explanation)
+        return re.sub(r"\s+", " ", text)[:220]
+    return ""
+
+
+def scan_bulk(items: List[Tuple[str, Optional[str]]], max_workers: int = 8) -> List[Dict]:
+    provs = _refresh_providers(st.session_state.get("providers") or build_providers())
+    st.session_state["providers"] = provs
+    rows: List[Dict] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = {ex.submit(scan_single, v, t, provs): (v, t) for v, t in items}
+        for fut in as_completed(futs):
+            try:
+                row = fut.result()
+                if row:
+                    rows.append(row)
+            except Exception:
+                v, t = futs[fut]
+                rows.append({"ioc": v, "type": t or "unknown", "verdict": "UNKNOWN",
+                             "severity": "?", "score": 0, "confidence": 0.0,
+                             "entropy": 0.0, "feeds_checked": 0, "feed_hits": 0,
+                             "summary": "Scan failed", "factors": [], "mitre": []})
+    rows.sort(key=lambda r: (-r["score"], r["ioc"]))
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Rendering
+# ---------------------------------------------------------------------------
+
+def colored_table(rows: List[Dict]) -> str:
+    html = ['<table style="border-collapse:collapse;width:100%;font-size:14px;">']
+    html.append('<tr style="background:#111827;color:#fff;">'
+                '<th style="padding:8px;">Veritas</th><th>Indicator</th><th>Type</th>'
+                '<th>Score</th><th>Confidence</th><th>Feeds</th><th>Signals</th>'
+                '<th>Summary</th><th>Actions</th></tr>')
+    for r in rows:
+        verdict = r.get("verdict", "UNKNOWN")
+        sc = r.get("score", 0)
+        fe = r.get("feeds_checked", 0)
+        hi = r.get("feed_hits", 0)
+        html.append(
+            '<tr style="border-bottom:1px solid #e5e7eb;">'
+            '<td style="padding:6px;">{}</td>'
+            '<td style="padding:6px;font-family:monospace;">{}</td>'
+            '<td style="padding:6px;">{}</td>'
+            '<td style="padding:6px;">{} {}</td>'
+            '<td style="padding:6px;">{:.0%}</td>'
+            '<td style="padding:6px;">{}/{}<br><span style="color:#6b7280;font-size:12px;">feeds / signals</span></td>'
+            '<td style="padding:6px;">{}</td>'
+            '<td style="padding:6px;">{}</td>'
+            '<td style="padding:6px;">{}</td>'
+            '</tr>'.format(
+                VERDICT_HTML.get(verdict, VERDICT_HTML["UNKNOWN"]),
+                r.get("ioc", ""),
+                r.get("type", ""),
+                _score_bar_html(sc),
+                sc,
+                r.get("confidence", 0.0),
+                fe,
+                hi,
+                _detail_badge(r),
+                r.get("summary", ""),
+                _action_badges(r),
+            )
+        )
+    html.append("</table>")
+    return "".join(html)
+
+
+def _detail_badge(r: Dict) -> str:
+    details = r.get("detail")
+    if not details:
+        return ""
+    info = r.get("type", "")
+    return info
+
+
+def _action_badges(r: Dict) -> str:
+    return '<span style="color:#6b7280;">&#128065;</span>'
+
+
+def verdict_df(rows: List[Dict]) -> pd.DataFrame:
+    return pd.DataFrame([
+        {"Indicator": r["ioc"], "Type": r["type"], "Verdict": r["verdict"],
+         "Score": r["score"], "Confidence": r["confidence"],
+         "Feeds": r["feeds_checked"], "Signals": r["feed_hits"],
+         "Summary": r["summary"]}
+        for r in rows
+    ])
+
+
+def render_verdict_chart(rows: List[Dict]) -> None:
+    import pandas as pd
+    df = pd.DataFrame([
+        {"Verdict": r["verdict"], "Count": 1} for r in rows
+    ])
+    if df.empty:
+        st.info("No results to chart.")
+        return
+    vc = df.groupby("Verdict")["Count"].count().reindex(
+        ["MALICIOUS", "SUSPICIOUS", "LOW", "CLEAN"], fill_value=0)
+    colors = {"MALICIOUS": "#b91c1c", "SUSPICIOUS": "#ea580c",
+              "LOW": "#facc15", "CLEAN": "#16a34a"}
+    chart = pd.DataFrame(
+        {"verdict": vc.index, "count": vc.values,
+         "color": [colors[v] for v in vc.index]})
+    st.bar_chart(chart, x="verdict", y="count", color="color",
+                 stack=False)
+
+
+# ---------------------------------------------------------------------------
+# Pages
+# ---------------------------------------------------------------------------
+
+def render_dashboard(rows: List[Dict], source: str) -> None:
+    col1, col2, col3, col4 = st.columns(4)
+    st.markdown("### 📊 Dashboard")
+    if not rows:
+        st.info("Run a scan first, or upload IOCs on the **Bulk Analysis** tab.")
+        return
+    agg = aggregate_bulk_scores([{"ioc": r["ioc"], "verdict": r["verdict"]} for r in rows])
+    m1 = col1.metric("Total Indicators", agg["total"])
+    m2 = col1.metric("Malicious", agg["malicious"])
+    m3 = col2.metric("Suspicious", agg["suspicious"])
+    m4 = col2.metric("Low", agg["low"])
+    m5 = col3.metric("Clean", agg["clean"])
+    m6 = col3.metric("Avg. Score", round(sum(r["score"] for r in rows) / max(len(rows), 1), 1)
+                     if rows else 0)
+    col4.metric("Feeds Hit", sum(r["feed_hits"] for r in rows))
+    avg = sum(r["confidence"] for r in rows) / max(len(rows), 1)
+    col4.metric("Avg. Confidence", "{:.0%}".format(avg))
+
+    st.subheader("Verdict Distribution")
+    render_verdict_chart(rows)
+
+    st.subheader("Critical Findings (top 10)")
+    crit = [r for r in rows if r["verdict"] in ("MALICIOUS", "SUSPICIOUS")][:10]
+    if crit:
+        st.markdown(colored_table(crit), unsafe_allow_html=True)
+    else:
+        st.success("No malicious findings in the current dataset.")
+
+    st.subheader("Full Dataset")
+    st.dataframe(verdict_df(rows), hide_index=True, use_container_width=True)
+
+
+def render_bulk() -> None:
+    st.markdown("### 🚀 Bulk IOC Analysis")
+    st.caption("Upload a CSV/TXT with one indicator per line, or paste below. "
+               "Types are auto-detected (IPv4, IPv6, domain, URL, MD5/SHA-1/SHA-256, CVE). "
+               "A second column can force the type (e.g. `sha256,abc…`).")
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        uploaded = st.file_uploader("Upload IOC list", type=["csv", "txt"], key="bulk_up")
+        paste = st.text_area("Or paste IOCs (one per line)", height=140, key="bulk_paste")
+    with c2:
+        st.markdown("**Configured TI feeds for this run**")
+        provs = _refresh_providers(st.session_state.get("providers") or build_providers())
+        st.session_state["providers"] = provs
+        rows_preview = []
+        for pid, p in provs.items():
+            rows_preview.append([p.name, "✓" if p.is_configured() or not p.needs_key else "—"])
+        st.dataframe(pd.DataFrame(rows_preview, columns=["Feed", "Ready"]),
+                     hide_index=True, use_container_width=True, height=220)
+
+    run = st.button("🔍 Scan Now", type="primary", use_container_width=True)
+    if run:
+        items = collect_iocs(uploaded, paste or "")
+        if not items:
+            st.warning("No indicators found. Check the format and try again.")
+            return
+        with st.spinner("Scanning {} indicator(s) across configured TI feeds…".format(len(items))):
+            rows = scan_bulk(items)
+        st.session_state["bulk_results"] = rows
+        st.session_state["bulk_source"] = source_name(uploaded, paste)
+        st.session_state["scan_time"] = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    rows = st.session_state.get("bulk_results") or []
+    if rows:
+        src = st.session_state.get("bulk_source", "")
+        st.markdown("### Results — {}".format(src))
+        agg = aggregate_bulk_scores([{"ioc": r["ioc"], "verdict": r["verdict"]} for r in rows])
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Total", agg["total"])
+        m2.metric("Malicious", agg["malicious"])
+        m3.metric("Suspicious", agg["suspicious"])
+        m4.metric("Low", agg["low"])
+        m5.metric("Clean", agg["clean"])
+        st.markdown(colored_table(rows), unsafe_allow_html=True)
+        csv = verdict_df(rows).to_csv(index=False).encode()
+        st.download_button("⬇ Download CSV", csv,
+                           file_name="viperintel_results_{}.csv".format(
+                               _dt.datetime.now().strftime("%Y%m%d_%H%M%S")),
+                           mime="text/csv")
+
+    st.divider()
+    st.markdown("**Per-indicator drill-down**")
+    detail_ioc = st.selectbox(
+        "Choose an indicator to inspect the evidence, or use the Investigate tab",
+        [r["ioc"] for r in rows] if rows else ["— run a scan first —"])
+    if rows and detail_ioc in [r["ioc"] for r in rows]:
+        for r in rows:
+            if r["ioc"] == detail_ioc:
+                render_single_result(r)
+
+
+def source_name(uploaded, paste: str) -> str:
+    if uploaded is not None:
+        return uploaded.name
+    if paste:
+        paste = paste.strip()
+        return "manual-paste ({} IOC)".format(len(paste.split("\n")))
+    return "no-input"
+
+
+def render_investigate() -> None:
+    st.markdown("### 🔍 Investigate Single Indicator")
+    ioc = st.text_input("Indicator (IP / domain / URL / hash / CVE)", key="inv_ioc")
+    run = st.button("Analyze", key="inv_go", type="primary")
+    provs = _refresh_providers(st.session_state.get("providers") or build_providers())
+    st.session_state["providers"] = provs
+    if not run:
+        if not ioc:
+            st.info("Enter any indicator to run a deep analysis across your configured feeds.")
+        return
+    if not ioc or not ioc.strip():
+        st.warning("Please enter an indicator.")
+        return
+    with st.spinner("Querying configured TI feeds…"):
+        row = scan_single(ioc.strip(), None, provs)
+    if row is None:
+        st.error("Unrecognised IOC format. Supported: IPv4/IPv6, domain, URL, "
+                 "MD5/SHA-1/SHA-256 hash, CVE identifier.")
+        return
+    hist = st.session_state.get("history", [])
+    hist.append({"ts": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                 "ioc": row["ioc"], "type": row["type"], "verdict": row["verdict"],
+                 "score": row["score"]})
+    st.session_state["history"] = hist[-200:]
+    render_single_result(row)
+    st.divider()
+    st.markdown("#### Watchlist")
+    if st.button("➕ Add to Watchlist", key="inv_add_wl"):
+        wl = st.session_state.get("watchlist", [])
+        if row["ioc"] not in [w["ioc"] for w in wl]:
+            wl.append({"ioc": row["ioc"], "type": row["type"], "verdict": row["verdict"],
+                       "score": row["score"]})
+            st.session_state["watchlist"] = wl
+            st.success("Added to watchlist")
+        else:
+            st.info("Already in watchlist")
+
+
+def render_single_result(r: Dict) -> None:
+    detail: RiskScoreResult = r["detail"]
+    st.markdown("## {}".format(r["ioc"]))
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Verdict", detail.verdict)
+    c2.metric("Risk Score", "{}/100".format(detail.score))
+    c3.metric("Confidence", "{:.0%}".format(detail.confidence))
+    c4.metric("Type", r["type"])
+    entra = detail.entropy
+    if entra:
+        st.progress(min(entra / 6.0, 1.0), text="Shannon entropy {:.2f}".format(entra))
+
+    st.subheader("Threat Feed Results")
+    provs = detail.providers or []
+    if not provs:
+        st.info("No TI feeds were run. Configure API keys in the sidebar to scan "
+                "this indicator type against live feeds.")
+        return
+    prov_rows = []
+    for p in provs:
+        if p.available:
+            prov_rows.append([p.provider, VERDICT_HTML.get(p.verdict.upper(), "?"),
+                              p.detections, p.confidence,
+                              ", ".join(p.mitre) if p.mitre else "—"])
+        else:
+            prov_rows.append([p.provider, "not available",
+                              "—", "—", p.reason if p.reason else "no key/data"])
+    st.dataframe(pd.DataFrame(prov_rows, columns=["Feed", "Verdict", "Detections",
+                                                  "Confidence", "Details"]),
+                 hide_index=True, use_container_width=True)
+
+    st.subheader("Structured intelligence")
+    st.json(_stripped_detail(detail))
+
+    st.subheader("Signal & Explanation")
+    if detail.explanation:
+        for line in detail.explanation:
+            st.markdown(line)
+    if detail.factors:
+        with st.expander("View risk factors ({})".format(len(detail.factors))):
+            for f in sorted(detail.factors, key=lambda x: x.points, reverse=True):
+                st.markdown("- **+{} {}** — {}  *({})*".format(
+                    f.points, f.name, f.reason, f.source))
+
+    st.subheader("Recommended actions")
+    for action in recommend_actions(detail):
+        st.markdown("- {}".format(action))
+
+
+def _stripped_detail(detail: RiskScoreResult) -> Dict:
+    return {
+        "score": detail.score,
+        "verdict": detail.verdict,
+        "severity": detail.severity,
+        "confidence": detail.confidence,
+        "entropy": detail.entropy,
+        "mitre_techniques": detail.mitre_techniques,
+        "factors": [{"name": f.name, "points": f.points, "reason": f.reason,
+                     "source": f.source} for f in detail.factors],
+    }
+
+
+def recommend_actions(detail: RiskScoreResult) -> List[str]:
+    out = []
+    if detail.score >= 80:
+        out.append("🛑 **Block**: add indicator to firewall/CDN/EDR blocklists and Sinkhole.")
+        out.append("🚨 **Contain**: isolate affected hosts for forensic imaging.")
+    if detail.score >= 40:
+        out.append("🔍 **Hunt**: search SIEM for traffic to/from this indicator (last 90 days).")
+    if detail.mitre_techniques:
+        out.append("📚 **MITRE ATT&CK**: investigate techniques {}".format(
+            ", ".join(detail.mitre_techniques)))
+    if detail.entropy and detail.entropy >= 4.3:
+        out.append("🧬 **DGA alert**: high entropy suggests algorithmically-generated domain - "
+                   "check DNS logs for periodic generation.")
+    if not out:
+        out.append("✅ **No action required** — indicator appears benign across configured feeds.")
+    return out
+
+
+def render_map(rows: List[Dict]) -> None:
+    from core.geo import country_coords
+    st.markdown("### 🗺 Threat Map")
+    st.caption("Geolocation from the IP feeds when available (AbuseIPDB / OTX / Shodan). "
+               "No external geo IP service is used.")
+    if not rows:
+        st.info("Run a bulk scan first to populate the threat map.")
+        return
+    indexed = [(r, i) for i, r in enumerate(rows)]
+    pts = []
+    for r, _ in indexed:
+        country = r.get("country", "").upper()
+        coords = country_coords.get(country)
+        if not coords:
+            continue
+        lat, lon = coords
+        color = "#b91c1c" if r["score"] >= 80 else "#ea580c" if r["score"] >= 40 else "#16a34a"
+        pts.append({"lat": lat, "lon": lon, "name": r["ioc"], "score": r["score"],
+                    "color": color, "verdict": r["verdict"], "country": country})
+    if not pts:
+        st.warning("No geo-located indicators in results (IP-feeds returned no country). "
+                   "Run an IP scan with AbuseIPDB/Shodan/OTX keys for map points.")
+        return
+
+    df = pd.DataFrame(pts)
+    layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=df,
+        get_position="[lon, lat]",
+        get_fill_color="[color]",
+        get_radius=25000,
+        pickable=True,
     )
-    st.session_state.page = selection
+    view = pdk.ViewState(latitude=df["lat"].mean(), longitude=df["lon"].mean(), zoom=1)
+    r = pdk.Deck(layers=[layer], initial_view_state=view,
+                 tooltip={"text": "{name}  ·  {verdict}  ·  score {score}"})
+    st.pydeck_chart(r)
+    with st.expander("Geo points (CSV)"):
+        st.dataframe(df, hide_index=True)
 
-    st.markdown("---")
-    st.markdown("### Session")
-    total_scans = len(st.session_state.history)
-    st.write("Scans this session: **{}**".format(total_scans))
-    watch_count = len(st.session_state.watchlist)
-    st.write("Watchlist entries: **{}**".format(watch_count))
 
-    st.markdown("---")
-    if st.button("\U0001f9f9 Clear Session Data", use_container_width=True):
-        st.session_state.history = []
-        st.session_state.watchlist = []
-        st.session_state.last_investigation = None
-        st.session_state.bulk_results = None
+def render_watchlist() -> None:
+    st.markdown("### ⭐ Watchlist")
+    wl = st.session_state.get("watchlist", [])
+    if not wl:
+        st.info("Watchlisted indicators will appear here. Use the Investigate tab to add one.")
+        return
+    for i, w in enumerate(wl):
+        c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
+        c1.markdown("`{}`  · {}  · {}".format(w["ioc"], w["type"], VERDICT_HTML.get(w["verdict"], "")))
+        c3.markdown("**Score {}**".format(w["score"]))
+        if c4.button("Remove", key="wl_rm_{}".format(i)):
+            wl.pop(i)
+            st.session_state["watchlist"] = wl
+            st.rerun()
+
+
+def render_history() -> None:
+    st.markdown("### 🕐 Investigation History")
+    hist = st.session_state.get("history", [])
+    if not hist:
+        st.info("Previous investigations will appear here.")
+        return
+    df = pd.DataFrame(hist)
+    st.dataframe(df, hide_index=True, use_container_width=True)
+    if st.button("Clear history"):
+        st.session_state["history"] = []
         st.rerun()
 
-    st.caption("All analysis runs 100% locally and offline. No external APIs or data are used.")
 
-# ================= HEADER =================
-st.markdown(
-    """
-    <div class="viper-header">
-        <div class="logo">\U0001f40d</div>
-        <div>
-            <div class="title">VIPER INTEL</div>
-            <div class="subtitle">SOC Threat Intelligence &amp; IOC Investigation Platform (Offline Engine)</div>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-# ================= HELPERS =================
-def verdict_color(verdict: str) -> str:
-    mapping = {
-        "CLEAN": "verdict-clean",
-        "LOW": "verdict-low",
-        "SUSPICIOUS": "verdict-medium",
-        "MALICIOUS": "verdict-critical",
-    }
-    return mapping.get(verdict, "verdict-medium")
-
-
-def verdict_hex(verdict: str) -> str:
-    mapping = {
-        "CLEAN": "#00ff88",
-        "LOW": "#88ff00",
-        "SUSPICIOUS": "#ffaa00",
-        "MALICIOUS": "#ff4444",
-    }
-    return mapping.get(verdict, "#ffaa00")
-
-
-def record_to_history(value, ioc_type, risk):
-    factors_out = []
-    for f in risk.factors:
-        factors_out.append({
-            "name": f.name,
-            "points": f.points,
-            "reason": f.reason,
-            "tier": f.tier,
-        })
-    st.session_state.history.insert(0, {
-        "ts": datetime.now(timezone.utc).isoformat() + "Z",
-        "time": datetime.now().strftime("%H:%M:%S"),
-        "ioc": value,
-        "type": ioc_type,
-        "score": risk.score,
-        "verdict": risk.verdict,
-        "severity": risk.severity,
-        "factors": factors_out,
-        "mitre": list(risk.mitre_techniques),
-        "risk_json": risk.to_dict(),
-    })
-    st.session_state.last_investigation = st.session_state.history[0]
-
-
-def render_score_header(value, ioc_type, risk, ai=None):
-    cols = st.columns(5)
-    cols[0].markdown(
-        '<div class="viper-card"><div class="card-label">Risk Score</div>'
-        '<div class="card-value">{}/100</div></div>'.format(risk.score),
-        unsafe_allow_html=True,
-    )
-    cols[1].markdown(
-        '<div class="viper-card"><div class="card-label">Verdict</div>'
-        '<div class="card-value {}">{}</div></div>'.format(verdict_color(risk.verdict), risk.verdict),
-        unsafe_allow_html=True,
-    )
-    cols[2].markdown(
-        '<div class="viper-card"><div class="card-label">Severity</div>'
-        '<div class="card-value" style="color:{};">{}</div></div>'.format(
-            verdict_hex(risk.verdict) if risk.verdict == "MALICIOUS" else "#94a3b8",
-            risk.severity,
-        ),
-        unsafe_allow_html=True,
-    )
-    cols[3].markdown(
-        '<div class="viper-card"><div class="card-label">Confidence</div>'
-        '<div class="card-value" style="color:#00ffcc;">{:.0%}</div></div>'.format(risk.confidence),
-        unsafe_allow_html=True,
-    )
-    cols[4].markdown(
-        '<div class="viper-card"><div class="card-label">Type</div>'
-        '<div class="card-value" style="color:#94a3b8; font-size:1.0rem;">{}</div></div>'.format(
-            IOC_LABELS.get(ioc_type, ioc_type.upper())),
-        unsafe_allow_html=True,
-    )
-
-
-def expandable_analysis(entry):
-    with st.expander("Open Investigation ({} pts)".format(entry["score"]), expanded=False):
-        st.markdown("**IOC:** `{}`  |  **Type:** {}  |  **Time:** {}".format(
-            entry["ioc"], entry["type"], entry.get("time", "")))
-        st.write("**Verdict:** {}  |  **Score:** {}/100  |  **Severity:** {}".format(
-            entry["verdict"], entry["score"], entry.get("severity", "")))
-        if entry.get("factors"):
-            st.markdown("**Risk Factors:**")
-            for f in entry["factors"]:
-                st.write("- {} ({} pts): {}".format(f["name"], f["points"], f["reason"]))
-        if entry.get("mitre"):
-            st.markdown("**MITRE ATT&CK:** {}".format(", ".join(entry["mitre"])))
-
-
-# ================= PAGE: DASHBOARD =================
-def page_dashboard():
-    st.subheader("\U0001f4ca Session Dashboard")
-    history = st.session_state.history
-
-    total = len(history)
-    malicious = sum(1 for h in history if h["verdict"] == "MALICIOUS")
-    suspicious = sum(1 for h in history if h["verdict"] == "SUSPICIOUS")
-    low = sum(1 for h in history if h["verdict"] == "LOW")
-    clean = sum(1 for h in history if h["verdict"] == "CLEAN")
-
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Total Scans", total)
-    c2.metric("Malicious", malicious, delta_color="inverse")
-    c3.metric("Suspicious", suspicious, delta_color="inverse")
-    c4.metric("Low Risk", low)
-    c5.metric("Clean", clean, delta_color="normal")
-
-    st.markdown("---")
-
-    left, right = st.columns([3, 2])
-
-    with left:
-        st.markdown("### Recent Session Activity")
-        if history:
-            df = pd.DataFrame([
-                {"Time": h["time"], "IOC": h["ioc"], "Type": h["type"],
-                 "Score": h["score"], "Verdict": h["verdict"]}
-                for h in history[:20]
-            ])
-            df["Verdict"] = df["Verdict"].apply(
-                lambda v: '<span style="color:{};">{}</span>'.format(verdict_hex(v), v))
-            st.write(df.to_html(index=False, escape=False), unsafe_allow_html=True)
-        else:
-            st.info("No investigations yet. Navigate to **Investigate** to run your first local IOC analysis.")
-
-    with right:
-        st.markdown("### Verdict Distribution")
-        if total:
-            vdata = pd.DataFrame([
-                {"Verdict": "Malicious", "Count": malicious},
-                {"Verdict": "Suspicious", "Count": suspicious},
-                {"Verdict": "Low", "Count": low},
-                {"Verdict": "Clean", "Count": clean},
-            ])
-            st.bar_chart(vdata.set_index("Verdict"))
-        else:
-            st.caption("No data to visualize yet.")
-
-    st.markdown("---")
-    st.markdown("### Quick Start")
-    st.caption("Enter an IOC in the **Investigate** tab to compute an explainable, offline Viper Risk Score and get a deterministic SOC analysis.")
-
-
-# ================= PAGE: INVESTIGATE =================
-def page_investigate():
-    st.subheader("\U0001f50d IOC Investigation")
-
-    col_in, col_sel = st.columns([3, 1])
-    with col_in:
-        ioc_input = st.text_input(
-            "Indicator",
-            placeholder="e.g. 185.220.101.5, evil-domain.xyz, CVE-2021-44228, a@"+"b.com ...",
-            label_visibility="collapsed",
-        )
-    with col_sel:
-        type_select = st.selectbox(
-            "Type (optional)",
-            ["Auto Detect"] + IOC_TYPES,
-            label_visibility="collapsed",
-        )
-
-    selected_type = None if type_select == "Auto Detect" else type_select
-
-    if st.button("\U0001f4a1 Investigate IOC", type="primary", use_container_width=True):
-        if not ioc_input.strip():
-            st.error("Please enter an IOC value.")
-        else:
-            ok, detected, err = validate_ioc(ioc_input, selected_type)
-            if not ok:
-                st.error("Invalid IOC: {}".format(err))
-            else:
-                _run_investigation(ioc_input, detected)
-
-
-def _run_investigation(value, detected):
-    risk = score_ioc(value, detected)
-    ai = analyze(value, risk)
-    record_to_history(value, detected, risk)
-    _render_investigation_result(value, detected, risk, ai)
-
-
-def _render_investigation_result(value, detected, risk, ai):
-    st.markdown("---")
-    render_score_header(value, detected, risk, ai)
-
-    st.markdown("---")
-    st.markdown("### Why is this IOC risky?")
-    if risk.factors:
-        for f in sorted([x for x in risk.factors if x.points > 0], key=lambda x: x.points, reverse=True):
-            st.markdown(
-                '<div class="viper-card" style="display:flex;justify-content:space-between;padding:10px 14px;">'
-                '<span><b>{}</b> &mdash; {}</span>'
-                '<span style="color:{};font-weight:700;">+{}</span></div>'.format(
-                    f.name, f.reason, verdict_hex(risk.verdict), f.points),
-                unsafe_allow_html=True,
-            )
-    else:
-        st.success("No suspicious indicators identified for this IOC.")
-
-    if risk.entropy:
-        st.caption("Shannon entropy: {:.2f}".format(risk.entropy))
-
-    st.markdown("---")
-    tabs = st.tabs(["SOC Analyst", "MITRE ATT&CK", "Report"])
-
-    with tabs[0]:
-        st.markdown("#### Executive Summary")
-        st.write(ai.executive_summary)
-
-        st.markdown("#### Technical Analysis")
-        st.write(ai.technical_analysis)
-
-        st.markdown("#### Why Suspicious")
-        for w in ai.why_suspicious:
-            st.markdown("- {}".format(w))
-
-        st.markdown("#### Recommended SOC Actions")
-        for a in ai.recommended_soc_actions:
-            st.markdown("- {}".format(a))
-
-        st.download_button(
-            "Download SOC Analysis (Markdown)",
-            render_markdown_report(value, risk, ai),
-            file_name="viper_report_{}.md".format(re.sub(r"[^a-zA-Z0-9]", "_", value)),
-            mime="text/markdown",
-        )
-
-    with tabs[1]:
-        if ai.mitre_attack_mapping:
-            m_df = pd.DataFrame([{
-                "Technique": m["id"],
-                "Name": m["name"],
-                "Tactic": m["tactic"],
-                "Description": m["description"],
-            } for m in ai.mitre_attack_mapping])
-            st.dataframe(m_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("No MITRE ATT&CK techniques associated with this indicator.")
-
-        st.markdown("#### Key Mapping Insights")
-        for m in ai.mitre_attack_mapping:
-            st.markdown("**{} - {}** ({})".format(m["id"], m["name"], m["tactic"]))
-            st.caption(m["description"])
-
-    with tabs[2]:
-        st.markdown(render_markdown_report(value, risk, ai))
-
-
-# ================= PAGE: THREAT MAP =================
-def page_threat_map():
-    st.subheader("\U0001f30d Threat Map - Spatial Distribution")
-
-    source = st.radio(
-        "Data Source",
-        ["IP-based inputs", "Entropy-mapped regions"],
-        horizontal=True,
-    )
-
-    points = []
-
-    if source == "IP-based inputs":
-        pool = []
-        for h in st.session_state.history:
-            if h["type"] in ("ipv4", "ipv6") and is_public_ip(h["ioc"]):
-                pool.append((h["ioc"], h["score"], h["verdict"]))
-        for ip, score, verdict in pool:
-            lat, lon, label = _ip_to_coords(ip)
-            points.append({
-                "lat": lat, "lon": lon, "label": label or ip,
-                "ip": ip, "score": score, "verdict": verdict,
-            })
-        for ip, lat, lon, label in ORGANIC_IP_POOL:
-            points.append({
-                "lat": lat, "lon": lon, "label": label, "ip": ip,
-                "score": 30, "verdict": "reference",
-            })
-    else:
-        handled = set()
-        regions = DEFAULT_REGIONS
-        for i, region in enumerate(regions):
-            jitter = ((i * 37) % 10 - 5) * 0.4
-            points.append({
-                "lat": region["lat"] + jitter * 0.1,
-                "lon": region["lon"] + jitter * 0.1,
-                "label": region["label"],
-                "ip": "-",
-                "score": 55 if i % 2 == 0 else 25,
-                "verdict": "SUSPICIOUS" if i % 2 == 0 else "LOW",
-            })
-
-    if not points:
-        st.info("No spatial indicators yet. Investigate an IP first, or view the entropy-mapped regional view.")
-        return
-
-    df = pd.DataFrame(points)
-
-    st.caption("{} points rendered across {} regions.".format(len(df), df["label"].nunique()))
-    left, right = st.columns([2, 1])
-    with left:
-        try:
-            import pydeck as pdk
-            layer = pdk.Layer(
-                "ScatterplotLayer",
-                data=df,
-                get_position="[lon, lat]",
-                get_fill_color="[200, 30, 30, 160]",
-                get_radius=120000,
-                pickable=True,
-            )
-            tooltip = {"html": "<b>{label}</b><br/>IP: {ip} | Score: {score} | {verdict}"}
-            view_state = pdk.ViewState(latitude=20, longitude=0, zoom=1)
-            deck = pdk.Deck(
-                layers=[layer],
-                initial_view_state=view_state,
-                tooltip=tooltip,
-                map_style="dark",
-            )
-            st.pydeck_chart(deck)
-        except Exception:
-            st.info("PyDeck render unavailable; showing table instead.")
-            st.dataframe(df, use_container_width=True, hide_index=True)
-
-    with right:
-        st.markdown("### List View")
-        st.dataframe(df[["label", "ip", "score", "verdict"]], use_container_width=True, hide_index=True)
-
-
-def _ip_to_coords(ip):
-    if not is_public_ip(ip):
-        return 0.0, 0.0, ip
-    octets = ip.split(".")
-    try:
-        lat = -90 + (int(octets[0]) * 37) % 160
-        lon = -180 + (int(octets[1]) * 53) % 340
-    except Exception:
-        lat, lon = 0.0, 0.0
-    return round(lat, 2), round(lon, 2), ip
-
-
-# ================= PAGE: BULK ANALYSIS =================
-def page_bulk_analysis():
-    st.subheader("\U0001f4e4 Bulk IOC Analysis")
-    st.caption("Upload a CSV or TXT file. Each line may be `type,value` or a bare indicator.")
-
-    upload = st.file_uploader("Upload CSV / TXT", type=["csv", "txt"])
-    col_mode, col_go = st.columns([2, 1])
-    with col_mode:
-        mode = st.radio("Detection mode", ["Auto Detect Type", "Use column type"], horizontal=True)
-    with col_go:
-        st.markdown("")
-        run_bulk = st.button("\U000026A1 Run Bulk Analysis", type="primary", use_container_width=True)
-
-    if run_bulk:
-        if upload is None:
-            st.error("Please upload a file first.")
-        else:
-            raw = upload.getvalue().decode("utf-8", errors="replace")
-            items = parse_bulk_file(raw)
-            if not items:
-                st.error("No usable indicators found in the file.")
-                return
-
-            results = []
-            with st.spinner("Running offline analysis on {} indicators...".format(len(items))):
-                for value, forced_type in items:
-                    if forced_type:
-                        ok, detected, err = validate_ioc(value, forced_type)
-                    else:
-                        ok, detected, err = validate_ioc(value, None)
-                    if not ok:
-                        results.append({
-                            "IOC": value, "Type": "unknown",
-                            "Score": 0, "Verdict": "INVALID", "Confidence": 0.0,
-                            "Reason": err,
-                        })
-                    else:
-                        risk = score_ioc(value, detected)
-                        results.append({
-                            "IOC": value, "Type": detected,
-                            "Score": risk.score, "Verdict": risk.verdict,
-                            "Confidence": risk.confidence,
-                            "Reason": "; ".join(f.reason for f in risk.factors if f.points > 0) or "No signals",
-                            "Mitre": ", ".join(risk.mitre_techniques),
-                        })
-
-            df = pd.DataFrame(results)
-            st.session_state.bulk_results = df
-
-    if st.session_state.bulk_results is not None:
-        df = st.session_state.bulk_results
-        stats = aggregate_bulk_scores(df.rename(columns={
-            "IOC": "ioc", "Type": "type", "Score": "score",
-            "Verdict": "verdict", "Confidence": "confidence",
-        }).to_dict("records"))
-
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Total", stats["total"])
-        c2.metric("Malicious", stats["malicious"])
-        c3.metric("Suspicious", stats["suspicious"])
-        c4.metric("Low", stats["low"])
-        c5.metric("Clean", stats["clean"])
-
-        st.dataframe(df, use_container_width=True, hide_index=True)
-
-        st.download_button(
-            "Download Results (CSV)",
-            df.to_csv(index=False),
-            file_name="viper_bulk_results.csv",
-            mime="text/csv",
-        )
-
-
-# ================= PAGE: WATCHLIST =================
-def page_watchlist():
-    st.subheader("\U0001f6a9 Watchlist (Session)")
-    st.caption("Monitored IOCs tracked in memory for the current session.")
-
-    entry_input = st.text_input(
-        "Add IOC to watchlist",
-        placeholder="Enter an IOC to monitor...",
-        key="watch_input",
-    )
-    add_col, _ = st.columns([1, 3])
-    with add_col:
-        if st.button("\u2795 Add to Watchlist", use_container_width=True):
-            if entry_input.strip():
-                ok, detected, err = validate_ioc(entry_input)
-                if not ok:
-                    st.error("Invalid IOC: {}".format(err))
-                else:
-                    risk = score_ioc(entry_input, detected)
-                    existing = [w for w in st.session_state.watchlist if w["ioc"] == entry_input.strip()]
-                    if existing:
-                        st.info("Already in watchlist.")
-                    else:
-                        st.session_state.watchlist.insert(0, {
-                            "ioc": entry_input.strip(),
-                            "type": detected,
-                            "score": risk.score,
-                            "verdict": risk.verdict,
-                            "added": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                            "status": "monitoring",
-                        })
-                        st.rerun()
-
-    if st.session_state.watchlist:
-        wdf = pd.DataFrame(st.session_state.watchlist)
-        st.dataframe(wdf[["ioc", "type", "score", "verdict", "added", "status"]],
-                     use_container_width=True, hide_index=True)
-
-        st.markdown("### Manage Watchlist")
-        w_names = [w["ioc"] for w in st.session_state.watchlist]
-        remove_val = st.selectbox("Remove IOC", ["Select..."] + w_names)
-        if remove_val != "Select..." and st.button("\U0001f5d1 Remove", type="secondary"):
-            st.session_state.watchlist = [w for w in st.session_state.watchlist if w["ioc"] != remove_val]
-            st.rerun()
-    else:
-        st.info("Watchlist is empty. Add IOCs to monitor reputation changes across the session.")
-
-
-# ================= PAGE: INVESTIGATION HISTORY =================
-def page_history():
-    st.subheader("\U0001f4c1 Investigation History (Session)")
-    history = st.session_state.history
-
-    if not history:
-        st.info("No investigations in this session yet.")
-        return
-
-    total = len(history)
-    malicious = sum(1 for h in history if h["verdict"] == "MALICIOUS")
-    suspicious = sum(1 for h in history if h["verdict"] == "SUSPICIOUS")
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total", total)
-    c2.metric("Malicious", malicious)
-    c3.metric("Suspicious", suspicious)
-
-    st.markdown("---")
-    st.markdown("### Session Records")
-
-    hdf = pd.DataFrame([{
-        "Time": h["time"],
-        "IOC": h["ioc"],
-        "Type": h["type"],
-        "Score": h["score"],
-        "Verdict": h["verdict"],
-        "Severity": h["severity"],
-    } for h in history])
-
-    event = st.dataframe(
-        hdf,
-        use_container_width=True,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="single-row",
-    )
-
-    st.markdown("### Reopen Investigation")
-    options = ["Select..."] + [h["ioc"] for h in history]
-    sel = st.selectbox("Choose an investigation", options)
-    if sel != "Select...":
-        entry = next((h for h in history if h["ioc"] == sel), None)
-        if entry:
-            expandable_analysis(entry)
-
-
-# ================= ROUTER =================
-if st.session_state.page == "Dashboard":
-    page_dashboard()
-elif st.session_state.page == "Investigate":
-    page_investigate()
-elif st.session_state.page == "Threat Map":
-    page_threat_map()
-elif st.session_state.page == "Bulk Analysis":
-    page_bulk_analysis()
-elif st.session_state.page == "Watchlist":
-    page_watchlist()
-elif st.session_state.page == "Investigation History":
-    page_history()
-
-# ================= FOOTER =================
-st.markdown(
-    """
-    <div style="position:fixed;bottom:0;left:0;right:0;text-align:center;
-    padding:8px;background:#0d1219;border-top:1px solid #1f2937;color:#64748b;font-size:0.75rem;">
-    Viper Intel SOC Edition &mdash; 100% Local Offline Analysis &middot; No external data &middot; In-session only
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+# ---------------------------------------------------------------------------
+# Entry
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    _init_state()
+    render_sidebar()
+
+    tabs = ["📊 Dashboard", "🚀 Bulk Analysis", "🔍 Investigate",
+            "🗺 Threat Map", "⭐ Watchlist", "🕐 History"]
+    page = st.tabs(tabs)
+    rows = st.session_state.get("bulk_results") or []
+    source = st.session_state.get("bulk_source", "")
+
+    with page[0]:
+        render_dashboard(rows, source)
+    with page[1]:
+        render_bulk()
+    with page[2]:
+        render_investigate()
+    with page[3]:
+        render_map(rows)
+    with page[4]:
+        render_watchlist()
+    with page[5]:
+        render_history()
+
+
+if __name__ == "__main__":
+    main()

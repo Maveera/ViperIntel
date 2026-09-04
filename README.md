@@ -1,11 +1,14 @@
-# Viper Intel — SOC Threat Intelligence & IOC Investigation Platform (Offline)
+# Viper Intel — SOC Threat Intelligence Scanner (Multi-Feed API)
 
-A lightweight, standalone SOC Threat Intelligence suite that runs **100% locally and offline** in your browser via Streamlit. No external APIs, no API keys, no third-party lookups, no databases — every analysis is computed in-memory with an explainable, deterministic engine.
+A Streamlit-based SOC toolkit for **bulk IP / hash / domain / URL / CVE triage**
+against **your configurable threat-intelligence feeds**. Correlate independent
+feeds into one explainable 0–100 risk score with a colour-coded verdict table
+and charts. No hardcoded API keys — you supply them at runtime.
 
 ## Core Workflow
 
 ```
-IOC Input → Local Analysis Engine → Explainable Risk Score → MITRE ATT&CK → Offline SOC Analyst → Recommendations → Session Dashboard
+Bulk IOC Upload / Paste → Auto-Detect Type → Query Configured TI Feeds (threaded) → Aggregate Risk Score 0–100 → Colour-Coded Verdict Table + Charts → Drill-Down Evidence → Recommendations
 ```
 
 ## Supported IOC Types (Auto-Detected)
@@ -16,35 +19,58 @@ IOC Input → Local Analysis Engine → Explainable Risk Score → MITRE ATT&CK 
 - CVE
 - Email Address / Hostname
 
+## Supported TI Feeds (API-configurable)
+
+| Feed | IOC Types | Key | Notes |
+|------|-----------|-----|-------|
+| VirusTotal | IP · domain · URL · hashes | required | engine detections, reputation, ASN |
+| AbuseIPDB | IP | required | abuse-confidence % + reports |
+| AlienVault OTX | IP · domain · URL · hashes · CVE | required | pulses, tags, malware families, threat actors |
+| GreyNoise | IP | required | noise / riot / classification |
+| Shodan | IP | required | open ports + exposed CVEs |
+| URLScan.io | IP · domain · URL | required | scan history |
+| NVD | CVE | optional | CVSS base score + description |
+| CISA KEV | CVE | none | known-exploited flag |
+| EPSS | CVE | none | exploitation probability percentile |
+
+Feeds degrade gracefully: a missing key or failed request marks the feed as
+unavailable and **never crashes the scan**.
+
 ## Features
 
 | View | Description |
 |------|-------------|
-| **Dashboard** | Session metrics (Total Scans / Malicious / Suspicious / Clean), recent activity table, verdict distribution chart. |
-| **Investigate** | Single-IOC investigation: 0–100 explainable Viper Risk Score, verdict, confidence, "why risky" factor breakdown, SOC Analyst analysis, MITRE ATT&CK mapping, Markdown report export. |
-| **Threat Map** | Spatial distribution visualization using PyDeck for IP-based indicators plus an entropy-mapped regional view. |
-| **Bulk Analysis** | Upload CSV/TXT to batch-scan IOCs offline; results table with download-to-CSV. |
-| **Watchlist** | In-memory session watchlist for tracking monitored indicators. |
-| **Investigation History** | Reopen and review every investigation performed in the current session. |
+| **Dashboard** | Session metrics, verdict distribution chart, critical findings, full dataset table. |
+| **Bulk Analysis** | Upload CSV/TXT or paste IOCs; threaded multi-feed scan; **colour-coded verdict table** (red/orange/yellow/green), risk-score bars, confidence, feed/signal counts, CSV export, per-IOC drill-down. |
+| **Investigate** | Single-IOC deep dive: per-feed evidence, structured intel JSON, risk-factor breakdown, MITRE ATT&CK, SOC recommendations. |
+| **Threat Map** | PyDeck scatter of geo-located indicators (country from IP feeds). |
+| **Watchlist** | In-memory tracking of indicators under monitoring. |
+| **Investigation History** | Every investigation performed in the current session. |
 
-## Offline Analysis Engine
+## API Key Configuration
 
-- **`core/detector.py`** — RegEx engine that detects all supported IOC types and handles CIDR expansion / bulk-file parsing.
-- **`core/offline_intel.py`** — Local heuristics: Shannon entropy (DGA detection), high-risk TLD checks (.zip, .top, .xyz, .cc, .tk …), suspicious-pattern rules, and a curated catalog of critical CVEs (CISA KEV entries such as Log4Shell, MOVEit, FortiOS, PrintNightmare, Cisco IOS XE, PHP-CGI, etc.).
-- **`core/risk_engine.py`** — Explainable 0–100 risk scoring with per-factor breakdown.
-- **`core/ai_engine.py`** — Deterministic, context-locked SOC Analyst producing Executive Summary, Technical Analysis, MITRE ATT&CK mapping, and actionable SOC recommendations. No external LLM calls.
+Add keys in the **sidebar → API Key Configuration**. Keys are kept in the
+session only; they can also be
+[configured as Streamlit secrets](https://docs.streamlit.io/develop/concepts/connections/secrets-management)
+or environment variables with the names shown beside each feed:
+
+- `VIRUSTOTAL_API_KEY` · `ABUSEIPDB_API_KEY` · `ALIENVault_API_KEY` · `GREYNOISE_API_KEY` · `SHODAN_API_KEY` · `URLSCAN_API_KEY` · `NVD_API_KEY`
+
+"💾 Save config" stores keys encrypted locally (`config.json` + `.secret.key`,
+Fernet). Add `config.json` and `.secret.key` to `.gitignore` (already done).
 
 ## Risk Score Scale
 
 | Score | Verdict | Severity |
 |-------|---------|----------|
-| 0–19  | CLEAN | Informational |
-| 20–39 | LOW | Low |
+| 0–21  | CLEAN | Informational |
+| 22–39 | LOW | Low |
 | 40–59 | SUSPICIOUS | Medium |
 | 60–79 | MALICIOUS | High |
 | 80–100| MALICIOUS | Critical |
 
-Every score is explained with concrete factors, e.g. `+35 High-Risk TLD`, `+30 DGA Entropy`, `+85 CISA KEV Cataloged`.
+Scores are explainable with concrete factors, e.g. `+85 CISA KEV Cataloged`,
+`+60 VirusTotal Detections`, `+40 AbuseIPDB Score`.
 
 ## Quick Start (Local)
 
@@ -56,8 +82,9 @@ streamlit run app.py
 ## Deploy on Streamlit Cloud
 
 1. Push this repository to GitHub.
-2. In the Streamlit Cloud dashboard, click **New app** → select repo & branch → Main file `app.py`.
-3. No secrets, keys, or environment variables are required — the app runs entirely offline.
+2. In Streamlit Cloud → **New app** → select repo & branch → Main file `app.py`.
+3. Add your API keys under Streamlit Cloud → **Settings → Secrets** using the
+   environment-variable names above (or enter them in the sidebar at runtime).
 
 ## Requirements
 
@@ -65,8 +92,13 @@ streamlit run app.py
 streamlit>=1.32.0
 pandas>=2.0.0
 pydeck>=0.8.0
+requests>=2.31.0
+cryptography>=41.0.0
 ```
 
 ## Privacy
 
-Viper Intel performs no network calls. All IOC analysis, scoring, and reporting happens locally in your browser session. Investigation history and watchlist data live only in `st.session_state` and are discarded when the session ends.
+Indicator lookups only ever go to the threat-intelligence feeds you configure.
+API keys are never written to the repository or logs; they live in your session
+(or your private Streamlit secrets). Local analysis uses in-memory heuristics
+(entropy / TLD / known CVE catalog) to supplement feed hits.

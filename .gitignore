@@ -2,3 +2,6 @@
 __pycache__/
 *.csv
 .streamlit/secrets.toml
+.config.json
+config.json
+.secret.key

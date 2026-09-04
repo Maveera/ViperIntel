@@ -4,12 +4,9 @@ from dataclasses import dataclass, field
 from core.detector import detect_ioc_type
 from core.offline_intel import (
     calculate_shannon_entropy,
-    extract_domain_part,
     get_tld,
-    get_sld,
     HIGH_RISK_TLDS,
     SUSPICIOUS_TLDS,
-    lookup_cve,
     ip_entropy_signal,
 )
 
@@ -19,7 +16,19 @@ class RiskFactor:
     name: str
     points: int
     reason: str
-    tier: str = "analysis"
+    source: str = "analysis"
+
+
+@dataclass
+class ProviderSummary:
+    provider: str
+    available: bool
+    reason: str
+    verdict: str
+    risk_points: int
+    detections: int
+    confidence: float
+    mitre: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -30,6 +39,7 @@ class RiskScoreResult:
     factors: List[RiskFactor] = field(default_factory=list)
     explanation: List[str] = field(default_factory=list)
     mitre_techniques: List[str] = field(default_factory=list)
+    providers: List[ProviderSummary] = field(default_factory=list)
     entropy: float = 0.0
     confidence: float = 0.0
 
@@ -38,14 +48,12 @@ class RiskScoreResult:
             "score": self.score,
             "verdict": self.verdict,
             "severity": self.severity,
-            "factors": [
-                {"name": f.name, "points": f.points, "reason": f.reason, "tier": f.tier}
-                for f in self.factors
-            ],
+            "factors": [{"name": f.name, "points": f.points, "reason": f.reason, "source": f.source}
+                        for f in self.factors],
             "explanation": self.explanation,
             "mitre_techniques": self.mitre_techniques,
-            "entropy": self.entropy,
             "confidence": self.confidence,
+            "entropy": self.entropy,
         }
 
 
@@ -53,306 +61,7 @@ def _bounded(value: int, lo: int = 0, hi: int = 100) -> int:
     return max(lo, min(hi, value))
 
 
-def score_ioc(value: str, ioc_type: Optional[str] = None) -> RiskScoreResult:
-    value = value.strip()
-    if not ioc_type:
-        ioc_type = detect_ioc_type(value) or "unknown"
-
-    factors: List[RiskFactor] = []
-    mitre: List[str] = []
-    points = 0
-
-    if ioc_type == "cve":
-        points, factors, mitre = _score_cve(value)
-        if points >= 80:
-            verdict, severity = "MALICIOUS", "Critical"
-        elif points >= 60:
-            verdict, severity = "MALICIOUS", "High"
-        elif points >= 40:
-            verdict, severity = "SUSPICIOUS", "Medium"
-        elif points >= 20:
-            verdict, severity = "LOW", "Low"
-        else:
-            verdict, severity = "CLEAN", "Informational"
-
-        return RiskScoreResult(
-            score=_bounded(points),
-            verdict=verdict,
-            severity=severity,
-            factors=factors,
-            explanation=[f.reason for f in factors],
-            mitre_techniques=mitre,
-            entropy=calculate_shannon_entropy(value),
-            confidence=0.95 if points >= 60 else 0.8,
-        )
-
-    if ioc_type in ("domain", "url", "hostname"):
-        return _score_domain_like(value, ioc_type, factors, mitre)
-
-    if ioc_type in ("ipv4", "ipv6"):
-        return _score_ip(value, ioc_type, factors, mitre)
-
-    if ioc_type in ("sha256", "sha1", "md5"):
-        points = 0
-        manual_hits = _manual_hash_signals(value.lower())
-        for hit in manual_hits:
-            points += hit["points"]
-            factors.append(RiskFactor(name=hit["name"], points=hit["points"], reason=hit["reason"]))
-            mitre.extend(hit.get("mitre", []))
-        verdict, severity = _classify(points)
-        return RiskScoreResult(
-            score=_bounded(points),
-            verdict=verdict,
-            severity=severity,
-            factors=factors,
-            explanation=[f.reason for f in factors],
-            mitre_techniques=list(dict.fromkeys(mitre)),
-            entropy=calculate_shannon_entropy(value),
-            confidence=0.75,
-        )
-
-    if ioc_type == "email":
-        domain = value.split("@")[-1].lower()
-        tld = get_tld(domain)
-        points = 0
-        p = get_sld(domain)
-        if tld in HIGH_RISK_TLDS:
-            points += 60
-            factors.append(RiskFactor("High-Risk TLD", 60, "Email domain uses high-risk TLD (.{}).".format(tld)))
-            mitre.append("T1566.002")
-        elif tld in SUSPICIOUS_TLDS:
-            points += 20
-            factors.append(RiskFactor("Suspicious TLD", 20, "Email domain uses suspicious TLD (.{}).".format(tld)))
-            mitre.append("T1566.002")
-        if p and any(segment.isdigit() for segment in p.split(".")):
-            points += 10
-            factors.append(RiskFactor("Numeric Domain", 10, "Email domain contains numeric segment(s) common in phishing."))
-            mitre.append("T1566.002")
-        domain_entropy = calculate_shannon_entropy(domain)
-        if domain_entropy >= 3.8:
-            points += 15
-            factors.append(RiskFactor("High Entropy Domain", 15, "Email domain has high Shannon entropy ({:.2f}), suggesting DGA.".format(domain_entropy)))
-            mitre.append("T1071.001")
-        verdict, severity = _classify(points)
-        return RiskScoreResult(
-            score=_bounded(points),
-            verdict=verdict,
-            severity=severity,
-            factors=factors,
-            explanation=[f.reason for f in factors],
-            mitre_techniques=list(dict.fromkeys(mitre)),
-            entropy=domain_entropy,
-            confidence=0.7,
-        )
-
-    points = 0
-    verdict, severity = _classify(points)
-    return RiskScoreResult(
-        score=0,
-        verdict=verdict,
-        severity=severity,
-        factors=[],
-        explanation=["Unknown IOC type. No local analysis applied."],
-        mitre_techniques=[],
-        entropy=0.0,
-        confidence=0.0,
-    )
-
-
-def _score_cve(value: str):
-    factors = []
-    mitre = []
-    points = 0
-
-    known = lookup_cve(value)
-    if known:
-        base = known.get("base_score", 0)
-        points += int(round(base * 10))
-        factors.append(RiskFactor(
-            "CISA KEV Cataloged",
-            int(round(base * 10)),
-            "{} is cataloged in the CISA Known Exploited Vulnerabilities list.".format(value.upper()),
-        ))
-        if known.get("cisa_kev"):
-            points += 15
-            factors.append(RiskFactor(
-                "Actively Exploited",
-                15,
-                "Vulnerability is known to be actively exploited in the wild.",
-            ))
-        if known.get("name"):
-            points += 15
-            factors.append(RiskFactor(
-                "Well-Known Vulnerability",
-                15,
-                "{} ({}) is a widely documented and exploited vulnerability.".format(
-                    known["name"], known.get("vendor", "Unknown")),
-            ))
-        mitre.extend(known.get("mitre", []))
-        if len(mitre) >= 2:
-            points += 5
-            factors.append(RiskFactor("Multiple MITRE Techniques", 5,
-                                      "Vulnerability maps to multiple MITRE ATT&CK techniques."))
-    else:
-        year = _cve_year(value)
-        points += 35
-        factors.append(RiskFactor("Unknown CVE", 35, "CVE not in local catalog; treat as high-priority and verify."))
-        if year and year <= 2024:
-            points += 10
-            factors.append(RiskFactor("Older CVE Year", 10, "CVE from {} has had more time for public exploitation.".format(year)))
-
-    points = _bounded(points)
-    mitre = list(dict.fromkeys(mitre))
-    return points, factors, mitre
-
-
-def _score_domain_like(value, ioc_type, factors, mitre):
-    points = 0
-    domain = extract_domain_part(value, ioc_type)
-    tld = get_tld(domain)
-    entropy = calculate_shannon_entropy(domain)
-
-    if tld in HIGH_RISK_TLDS:
-        points += 35
-        factors.append(RiskFactor("High-Risk TLD", 35, "Domain uses high-risk TLD (.{}).".format(tld)))
-        mitre.append("T1071.001")
-    elif tld in SUSPICIOUS_TLDS:
-        points += 15
-        factors.append(RiskFactor("Suspicious TLD", 15, "Domain uses suspicious TLD (.{}).".format(tld)))
-        mitre.append("T1071.001")
-    elif not tld and ioc_type == "hostname":
-        factors.append(RiskFactor("Hostname Informational", 0, "Hostname has no TLD; informational."))
-
-    signal, dga_points = _dga_rule(entropy)
-    if signal:
-        points += dga_points
-        factors.append(RiskFactor("DGA Entropy", dga_points,
-                                  "High Shannon entropy ({:.2f}) suggests algorithmically generated domain.".format(entropy)))
-        mitre.append("T1071.001")
-
-    label = "URL" if ioc_type == "url" else ("Domain" if ioc_type == "domain" else "Hostname")
-
-    if len(domain) > 45:
-        points += 15
-        factors.append(RiskFactor("Very Long Domain", 15, "{} length ({}) is abnormal for legitimate registrations.".format(label, len(domain))))
-        if "T1071.001" not in mitre:
-            mitre.append("T1071.001")
-
-    numeric_segments = [s for s in domain.split(".") if s.isdigit()]
-    if numeric_segments:
-        points += 15
-        factors.append(RiskFactor("Numeric Segments", 15, "Domain contains numeric segment(s) common in phishing domains."))
-        if "T1566.002" not in mitre:
-            mitre.append("T1566.002")
-
-    hyphens = domain.count("-")
-    if hyphens >= 3:
-        points += 10
-        factors.append(RiskFactor("Excessive Hyphens", 10, "Domain contains {} hyphens, common in phishing lookalikes.".format(hyphens)))
-        if "T1566.002" not in mitre:
-            mitre.append("T1566.002")
-
-    if any(seg in domain for seg in ("paypal", "login", "secure", "bank", "apple")):
-        points += 10
-        factors.append(RiskFactor("Brand Impersonation Keywords", 10,
-                                  "Domain contains brand-related keywords often spoofed in phishing."))
-        if "T1566.002" not in mitre:
-            mitre.append("T1566.002")
-
-    if ioc_type == "url":
-        from urllib.parse import urlparse
-        parsed = urlparse(value)
-        if parsed.username or parsed.password:
-            points += 20
-            factors.append(RiskFactor("Embedded Credentials", 20, "URL contains embedded username/password (credential harvesting indicator)."))
-            mitre.append("T1566.002")
-        if parsed.port and parsed.port not in (80, 443, 8080):
-            points += 15
-            factors.append(RiskFactor("Uncommon Port", 15, "URL uses uncommon port ({}) to avoid detection.".format(parsed.port)))
-            mitre.append("T1071.001")
-        if parsed.path and len(parsed.path) > 10 and _no_slashes_suspicious(parsed.path):
-            points += 10
-            factors.append(RiskFactor("Obfuscated Path", 10, "URL path contains many suspicious characters, typical of phishing links."))
-            mitre.append("T1566.002")
-        if "@" in (parsed.netloc or value):
-            points += 15
-            factors.append(RiskFactor("At-Sign Obfuscation", 15, "URL uses @-sign obfuscation to disguise the real destination."))
-            mitre.append("T1566.002")
-        if re_ipv4_in_host(parsed.netloc):
-            points += 15
-            factors.append(RiskFactor("Raw IP in URL", 15, "URL host is a raw IP address, bypassing domain-based blocklists."))
-            mitre.append("T1071.001")
-
-    points = _bounded(points)
-    verdict, severity = _classify(points)
-    return RiskScoreResult(
-        score=points,
-        verdict=verdict,
-        severity=severity,
-        factors=factors,
-        explanation=[f.reason for f in factors],
-        mitre_techniques=list(dict.fromkeys(mitre)),
-        entropy=entropy,
-        confidence=0.8 if points >= 40 else 0.6,
-    )
-
-
-def _score_ip(value, ioc_type, factors, mitre):
-    points = 0
-    ent, high_ent = ip_entropy_signal(value, ioc_type)
-
-    if ioc_type == "ipv6":
-        points += 15
-        factors.append(RiskFactor("IPv6 Address", 15, "IPv6 addresses are commonly used to evade IPv4-based monitoring."))
-        mitre.append("T1071.001")
-
-    if high_ent:
-        points += 10
-        factors.append(RiskFactor("High Entropy IPv4", 10,
-                                  "High Shannon entropy ({:.2f}) in IP octets can indicate algorithmic assignment.".format(ent)))
-
-    if value.startswith(("185.", "45.", "103.", "94.", "5.")):
-        points += 15
-        factors.append(RiskFactor("Known Risk Range", 15, "IP falls within frequently abused hosting ranges (5.x/45.x/94.x/185.x)."))
-        mitre.append("T1071.001")
-
-    first_octet = int(value.split(".")[0]) if ioc_type == "ipv4" and value.split(".")[0].isdigit() else None
-    if first_octet in (5, 45, 94, 185):
-        points += 20
-        factors.append(RiskFactor("Common Abuse Octet", 20, "Leading octet {} is disproportionately reported for abuse.".format(first_octet)))
-        if "T1071.001" not in mitre:
-            mitre.append("T1071.001")
-
-    points = _bounded(points)
-    verdict, severity = _classify(points)
-    return RiskScoreResult(
-        score=points,
-        verdict=verdict,
-        severity=severity,
-        factors=factors,
-        explanation=[f.reason for f in factors],
-        mitre_techniques=list(dict.fromkeys(mitre)),
-        entropy=ent,
-        confidence=0.7,
-    )
-
-
-def _manual_hash_signals(sha256: str) -> List[Dict]:
-    hits = []
-    if "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" in sha256:
-        hits.append({"name": "Empty File Hash", "points": 10, "reason": "Hash matches known empty-file SHA-256.", "mitre": []})
-    return hits
-
-
-def _dga_rule(entropy: float):
-    if entropy >= 4.5:
-        return True, 30
-    if entropy >= 4.0:
-        return True, 15
-    return False, 0
-
-
-def _classify(points: int):
+def classify(points: int):
     if points >= 80:
         return "MALICIOUS", "Critical"
     if points >= 60:
@@ -364,43 +73,255 @@ def _classify(points: int):
     return "CLEAN", "Informational"
 
 
-def _cve_year(value: str) -> Optional[int]:
-    try:
-        year = int(value.split("-")[1])
-        return year
-    except Exception:
-        return None
+def score_from_providers(value: str, provider_results: List[Dict],
+                         ioc_type: Optional[str] = None) -> RiskScoreResult:
+    value = value.strip()
+    if not ioc_type:
+        ioc_type = detect_ioc_type(value) or "unknown"
+
+    factors: List[RiskFactor] = []
+    mitre: List[str] = []
+    summaries: List[ProviderSummary] = []
+    avail = [r for r in provider_results if r.get("available")]
+
+    weighted_sum, weight_total = 0.0, 0.0
+    malicious_feeds = 0
+    suspicious_feeds = 0
+    detected_feeds = 0
+
+    for r in provider_results:
+        summaries.append(ProviderSummary(
+            provider=r.get("provider", "?"),
+            available=bool(r.get("available")),
+            reason=r.get("reason", ""),
+            verdict=r.get("verdict", "unknown"),
+            risk_points=int(r.get("risk_points", 0)),
+            detections=int(r.get("detections", 0)),
+            confidence=float(r.get("confidence", 0.0)),
+            mitre=list(r.get("mitre", [])),
+        ))
+        mitre.extend(r.get("mitre", []))
+
+        if not r.get("available"):
+            continue
+        detected_feeds += 1
+        verdict = r.get("verdict", "unknown")
+        if verdict == "malicious":
+            malicious_feeds += 1
+        elif verdict == "suspicious":
+            suspicious_feeds += 1
+
+        pts = int(r.get("risk_points", 0))
+        conf = float(r.get("confidence", 0.0))
+        w = 0.5 + conf
+        weighted_sum += pts * w
+        weight_total += w
+
+        name = r.get("provider", "?")
+        data = r.get("data", {})
+        _append_provider_factors(factors, name, verdict, pts, data)
+
+    # Supplement with offline heuristics (entropy / TLD / known ranges)
+    _append_heuristic_factors(value, ioc_type, factors, mitre)
+
+    if weight_total > 0 and detected_feeds > 0:
+        base_score = int(weighted_sum / weight_total)
+    else:
+        base_score = len(factors) * 10
+
+    # Boost when multiple independent feeds agree on malicious
+    if malicious_feeds >= 2:
+        base_score += 5
+    if malicious_feeds >= 3:
+        base_score += 5
+    if malicious_feeds > 0 and suspicious_feeds >= 2:
+        base_score += 5
+
+    score = _bounded(base_score)
+    verdict, severity = classify(score)
+
+    if avail:
+        confidence = sum(float(r.get("confidence", 0.0)) for r in avail) / len(avail)
+        confidence = min(1.0, confidence + 0.05 * min(len(avail), 5))
+    else:
+        confidence = 0.0
+
+    explanation = _build_explanation(score, verdict, factors, detected_feeds)
+
+    return RiskScoreResult(
+        score=score,
+        verdict=verdict,
+        severity=severity,
+        factors=factors,
+        explanation=explanation,
+        mitre_techniques=list(dict.fromkeys([t for t in mitre if t.startswith("T")])),
+        providers=summaries,
+        entropy=calculate_shannon_entropy(value),
+        confidence=round(confidence, 3),
+    )
 
 
-def _no_slashes_suspicious(path: str) -> bool:
-    suspicious_chars = 0
-    for ch in path:
-        if ch in "-_%@":
-            suspicious_chars += 1
-    return suspicious_chars >= 3
+def _append_provider_factors(factors: List[RiskFactor], name: str, verdict: str,
+                             pts: int, data: Dict) -> None:
+    if name == "VirusTotal":
+        mal = data.get("malicious", 0)
+        total = data.get("total_engines", 0)
+        if mal > 0:
+            factors.append(RiskFactor(
+                "VirusTotal Detections", pts,
+                "Flagged malicious by {}/{} engines".format(mal, total), name))
+        elif data.get("suspicious", 0) > 0:
+            factors.append(RiskFactor(
+                "VirusTotal Suspicious", pts,
+                "Flagged suspicious by {} engines".format(data.get("suspicious", 0)), name))
+    elif name == "AbuseIPDB":
+        sc = data.get("abuse_confidence_score", 0)
+        rep = data.get("total_reports", 0)
+        if sc > 0:
+            factors.append(RiskFactor(
+                "AbuseIPDB Score", min(pts, 100),
+                "Abuse confidence {}% with {} reports ({} recent)".format(
+                    sc, rep, data.get("recent_reports", 0)), name))
+    elif name == "AlienVault OTX":
+        n = data.get("pulse_count", 0)
+        if n > 0:
+            factors.append(RiskFactor(
+                "OTX Pulses", min(pts, 100),
+                "Found in {} OTX pulses".format(n), name))
+        if data.get("malware_families"):
+            factors.append(RiskFactor(
+                "OTX Malware", 20,
+                "Malware families: {}".format(", ".join(data["malware_families"][:3])), name))
+        if data.get("threat_actors"):
+            factors.append(RiskFactor(
+                "OTX Threat Actors", 15,
+                "Threat actors: {}".format(", ".join(data["threat_actors"][:3])), name))
+    elif name == "GreyNoise":
+        if data.get("noise"):
+            factors.append(RiskFactor(
+                "GreyNoise", min(pts, 100),
+                "Noise: {}".format(data.get("classification", "unknown")), name))
+    elif name == "Shodan":
+        v = data.get("vulnerabilities", [])
+        p = data.get("ports", [])
+        if v:
+            factors.append(RiskFactor(
+                "Shodan Vulnerabilities", pts,
+                "{} exposed CVEs: {}".format(len(v), ", ".join(v[:4])), name))
+        elif p:
+            factors.append(RiskFactor(
+                "Shodan Ports", min(pts, 100),
+                "Exposed ports: {}".format(", ".join(map(str, p[:8]))), name))
+    elif name == "URLScan.io":
+        n = data.get("scans_found", 0)
+        if n > 0:
+            factors.append(RiskFactor(
+                "URLScan Detections", min(pts, 100),
+                "{} scans found for indicator".format(n), name))
+    elif name == "NVD":
+        if data.get("base_score"):
+            factors.append(RiskFactor(
+                "NVD CVSS", min(pts, 100),
+                "CVSS {}/10 ({})".format(data["base_score"], data.get("severity", "")), name))
+    elif name == "CISA KEV":
+        if data.get("in_kev"):
+            factors.append(RiskFactor(
+                "CISA KEV", pts,
+                "{} actively exploited (added {})".format(
+                    data.get("cveID", ""), data.get("dateAdded", "")), name))
 
 
-def re_ipv4_in_host(netloc: str) -> bool:
-    import re
-    return bool(re.match(r"^(\d{1,3}\.){3}\d{1,3}(:\d+)?$", netloc or ""))
+def _append_heuristic_factors(value: str, ioc_type: str,
+                              factors: List[RiskFactor], mitre: List[str]) -> None:
+    if ioc_type in ("domain", "url", "hostname"):
+        tld = get_tld(value)
+        entropy = calculate_shannon_entropy(value)
+        if tld in HIGH_RISK_TLDS:
+            factors.append(RiskFactor("High-Risk TLD", 35,
+                                       "High-risk TLD (.{}): commonly used for phishing/DGA".format(tld)))
+            mitre.append("T1071.001")
+        elif tld in SUSPICIOUS_TLDS:
+            factors.append(RiskFactor("Suspicious TLD", 15,
+                                       "Suspicious TLD (.{}).".format(tld)))
+            mitre.append("T1071.001")
+        if entropy >= 4.3:
+            factors.append(RiskFactor("DGA Entropy", 25,
+                                       "High Shannon entropy ({:.2f}) suggests algorithmically generated name".format(entropy)))
+            mitre.append("T1071.001")
+    elif ioc_type in ("sha256", "sha1", "md5"):
+        entropy = calculate_shannon_entropy(value)
+        factors.append(RiskFactor("Hash Verified", 0,
+                                   "Hash format validated ({} chars, entropy {:.2f}).".format(
+                                       len(value), entropy)))
+    elif ioc_type in ("ipv4", "ipv6"):
+        ent, high = ip_entropy_signal(value, ioc_type)
+        if high:
+            factors.append(RiskFactor("High Entropy IPv4", 10,
+                                       "Unusual numeric entropy in IP octets.".format(ent)))
+        if value.startswith(("185.", "45.", "5.", "94.")):
+            factors.append(RiskFactor("Known Abuse Range", 15,
+                                       "Leading octet {} is disproportionately reported for abuse.".format(
+                                           value.split(".")[0])))
 
 
-def apply_tier(rr: RiskScoreResult, tier: str) -> RiskScoreResult:
-    for f in rr.factors:
-        f.tier = tier
-    return rr
+def _build_explanation(score: int, verdict: str,
+                       factors: List[RiskFactor], feeds: int) -> List[str]:
+    lines = []
+    positives = [f for f in factors if f.points > 0]
+    if positives:
+        lines.append("Detected by {} threat intelligence feed(s).".format(feeds))
+        lines.append("")
+        lines.append("Key contributing factors:")
+        for f in sorted(positives, key=lambda x: x.points, reverse=True)[:6]:
+            lines.append("  +{} {} - {}".format(f.points, f.name, f.reason))
+    elif verdict == "CLEAN":
+        lines.append("No threat-intelligence sources flagged this indicator.")
+        lines.append("IOC appears clean across configured feeds.")
+    else:
+        lines.append("Signals detected from {} feed(s).".format(feeds))
+    return lines
 
 
-def aggregate_bulk_scores(items: List[Dict]) -> Dict:
-    total = len(items)
-    malicious = sum(1 for i in items if i.get("verdict") == "MALICIOUS")
-    suspicious = sum(1 for i in items if i.get("verdict") == "SUSPICIOUS")
-    low = sum(1 for i in items if i.get("verdict") == "LOW")
-    clean = sum(1 for i in items if i.get("verdict") == "CLEAN")
+def score_offline_only(value: str, ioc_type: Optional[str] = None) -> RiskScoreResult:
+    """Fallback scoring when no API keys are configured: use heuristics + CVE catalog."""
+    from core.offline_intel import lookup_cve
+
+    factors: List[RiskFactor] = []
+    mitre: List[str] = []
+    value = value.strip()
+    if not ioc_type:
+        ioc_type = detect_ioc_type(value) or "unknown"
+
+    if ioc_type == "cve":
+        known = lookup_cve(value)
+        if known:
+            factors.append(RiskFactor(
+                "CISA KEV Cataloged", min(100, int(known["base_score"] * 10)),
+                "{} is a known exploited vulnerability: {}".format(value, known["name"])))
+            mitre.extend(known.get("mitre", []))
+    else:
+        _append_heuristic_factors(value, ioc_type, factors, mitre)
+
+    score = _bounded(sum(f.points for f in factors))
+    verdict, severity = classify(score)
+    return RiskScoreResult(
+        score=score,
+        verdict=verdict,
+        severity=severity,
+        factors=factors,
+        explanation=[f.reason for f in factors] if factors else ["No configured feeds; offline heuristics only."],
+        mitre_techniques=list(dict.fromkeys([t for t in mitre if t.startswith("T")])),
+        entropy=calculate_shannon_entropy(value),
+        confidence=0.5,
+    )
+
+
+def aggregate_bulk_scores(rows: List[Dict]) -> Dict:
+    total = len(rows)
     return {
         "total": total,
-        "malicious": malicious,
-        "suspicious": suspicious,
-        "low": low,
-        "clean": clean,
+        "malicious": sum(1 for r in rows if r.get("verdict") == "MALICIOUS"),
+        "suspicious": sum(1 for r in rows if r.get("verdict") == "SUSPICIOUS"),
+        "low": sum(1 for r in rows if r.get("verdict") == "LOW"),
+        "clean": sum(1 for r in rows if r.get("verdict") == "CLEAN"),
     }
