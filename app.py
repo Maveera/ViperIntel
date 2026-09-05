@@ -5,8 +5,8 @@ Bulk IP / Hash / Domain / URL / CVE analysis against configurable
 threat-intelligence feeds (VirusTotal, AbuseIPDB, AlienVault OTX,
 GreyNoise, Shodan, URLScan.io). Only feeds with an API key are queried.
 
-No hardcoded secrets. API keys are supplied via the sidebar at runtime,
-or via Streamlit secrets / environment variables for deployments.
+No hardcoded secrets. API keys are supplied in the sidebar at runtime and
+stored only in the browser (localStorage) — never on the server or in code.
 """
 
 from __future__ import annotations
@@ -41,6 +41,13 @@ st.set_page_config(page_title="Viper Intel", layout="wide",
 
 APP_TAG = "v3.0 API scan"
 DATA_FILE = "viperintel_data.pkl"
+
+try:
+    from streamlit_javascript import st_javascript as _browser_js
+except Exception:
+    _browser_js = None
+
+_BROWSER_KEY_STORE = "viperintel_api_keys"
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +93,8 @@ def _snapshot_clear() -> None:
 
 
 def _init_state() -> None:
-    _s("api_keys", {})
+    if "api_keys" not in st.session_state:
+        st.session_state["api_keys"] = _load_browser_keys()
     _s("providers", None)
     _s("bulk_results", [])
     _s("bulk_source", None)
@@ -129,50 +137,53 @@ est = _dt.datetime.now()
 # Sidebar: API key configuration (same as before - no hardcoded secrets)
 # ---------------------------------------------------------------------------
 
-def _encrypt_save(keys: Dict[str, str]) -> None:
+def _save_browser_keys(keys: Dict[str, str]) -> None:
+    """Persist keys in the browser's localStorage only (never on the server)."""
     try:
-        from cryptography.fernet import Fernet
-        key_file = ".secret.key"
-        if not os.path.exists(key_file):
-            with open(key_file, "wb") as f:
-                f.write(Fernet.generate_key())
-        with open(key_file, "rb") as f:
-            fkey = Fernet(f.read())
-        payload = fkey.encrypt(json.dumps(keys).encode())
-        with open("config.json", "wb") as f:
-            f.write(payload)
-        st.sidebar.success("API keys saved (encrypted: config.json)")
-    except Exception as e:
-        st.sidebar.error("Save failed: {}".format(e))
-
-
-def _load_config_silent() -> None:
-    """Load saved (encrypted) keys once at startup; silently ignore problems."""
-    try:
-        from cryptography.fernet import Fernet
-        if not (os.path.exists("config.json") and os.path.exists(".secret.key")):
+        if _browser_js is None:
             return
-        with open(".secret.key", "rb") as f:
-            fkey = Fernet(f.read())
-        with open("config.json", "rb") as f:
-            payload = fkey.decrypt(f.read())
-        stored = json.loads(payload.decode())
-        cur = dict(st.session_state.get("api_keys", {}))
-        cur.update({k: v for k, v in stored.items() if v})
-        st.session_state["api_keys"] = cur
-        st.session_state["_keys_hash"] = hash(frozenset(cur.items()))
+        payload = json.dumps({k: v for k, v in keys.items() if v})
+        _browser_js(
+            "localStorage.setItem({0!r}, {1!r})".format(_BROWSER_KEY_STORE, payload),
+            key="stash_viper_keys",
+        )
     except Exception:
-        pass  # corrupt / missing config is handled by re-entering keys
+        pass
+
+
+def _clear_browser_keys() -> None:
+    try:
+        if _browser_js is not None:
+            _browser_js(
+                "localStorage.removeItem({!r})".format(_BROWSER_KEY_STORE),
+                key="drop_viper_keys",
+            )
+    except Exception:
+        pass
+
+
+def _load_browser_keys() -> Dict[str, str]:
+    """Read keys from the browser's localStorage (empty dict if unavailable)."""
+    try:
+        if _browser_js is None:
+            return {}
+        raw = _browser_js(
+            "localStorage.getItem({0!r}) || '{{}}'".format(_BROWSER_KEY_STORE),
+            key="fetch_viper_keys", ttl=600,
+        )
+        if not raw:
+            return {}
+        parsed = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+        if not isinstance(parsed, dict):
+            return {}
+        return {str(k): str(v) for k, v in parsed.items() if v}
+    except Exception:
+        return {}
 
 
 def render_sidebar() -> None:
     st.sidebar.header("🐍 Viper Intel")
     st.sidebar.caption(APP_TAG + " | " + est.strftime("%Y-%m-%d %H:%M"))
-
-    # restore saved keys once per session
-    if not st.session_state.get("_cfg_loaded"):
-        _load_config_silent()
-        st.session_state["_cfg_loaded"] = True
 
     with st.sidebar.expander("🔑 API Key Configuration", expanded=True):
         keys = dict(st.session_state.get("api_keys", {}))
@@ -192,7 +203,7 @@ def render_sidebar() -> None:
         if p_sel is not None:
             st.text_input(
                 p_sel["name"], type="password", key="add_inp_" + p_sel["id"],
-                placeholder="Enter {} key (press Enter to save)".format(p_sel["name"]),
+                placeholder="Enter {} key (stored in your browser)".format(p_sel["name"]),
                 help="{} | {}".format(p_sel["key_hint"], p_sel["free"]),
             )
             val = str(st.session_state.get("add_inp_" + p_sel["id"], "") or "").strip()
@@ -202,10 +213,10 @@ def render_sidebar() -> None:
                 keys.pop(p_sel["id"], None)
         st.session_state["api_keys"] = keys
 
-        # auto-save on change (e.g. after pressing Enter)
+        # persist to the browser only when the key set changes
         kh = hash(frozenset(keys.items()))
         if keys and kh != st.session_state.get("_keys_hash"):
-            _encrypt_save(keys)
+            _save_browser_keys(keys)
             st.session_state["_keys_hash"] = kh
 
     with st.sidebar.expander("💾 Saved API Keys", expanded=True):
@@ -236,7 +247,7 @@ def render_sidebar() -> None:
                 st.session_state["providers"] = None
                 st.session_state.pop("ui_reveal_" + p["id"], None)
                 st.session_state.pop("ui_edit_" + p["id"], None)
-                _encrypt_save(remaining)
+                _save_browser_keys(remaining)
                 st.rerun()
             if reveal:
                 st.caption("Key ends with **{}**".format(key[-4:]))
@@ -253,18 +264,14 @@ def render_sidebar() -> None:
                     st.session_state["_keys_hash"] = None
                     st.session_state["providers"] = None
                     st.session_state["ui_edit_" + p["id"]] = False
-                    _encrypt_save(updated)
+                    _save_browser_keys(updated)
                     st.rerun()
         if saved:
             if st.button("🗑 Delete all keys", key="clear_keys"):
                 st.session_state["api_keys"] = {}
                 st.session_state["_keys_hash"] = None
                 st.session_state["providers"] = None
-                try:
-                    os.remove("config.json")
-                    os.remove(".secret.key")
-                except OSError:
-                    pass
+                _clear_browser_keys()
                 st.rerun()
 
     with st.sidebar.expander("🛰 TI Feeds Active", expanded=False):

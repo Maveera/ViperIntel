@@ -5,33 +5,13 @@ import requests
 
 
 def get_api_key(name: str) -> str:
-    """Resolve an API key from Streamlit secrets / env vars (preferred) or session state."""
-    import os
-    import streamlit as st
-
-    env_keys = {
-        "virustotal": "VIRUSTOTAL_API_KEY",
-        "abuseipdb": "ABUSEIPDB_API_KEY",
-        "alienvault": "ALIENVAULT_API_KEY",
-        "greynoise": "GREYNOISE_API_KEY",
-        "shodan": "SHODAN_API_KEY",
-        "urlscan": "URLSCAN_API_KEY",
-    }
-    env_name = env_keys.get(name)
-    if env_name and os.getenv(env_name):
-        return os.getenv(env_name, "").strip()
+    """Resolve an API key entered in the sidebar (stored in the browser only)."""
     try:
-        if env_name and st.secrets.get(env_name):
-            return str(st.secrets.get(env_name)).strip()
-    except Exception:
-        pass
-    try:
+        import streamlit as st
         keys = st.session_state.get("api_keys", {})
-        if keys.get(name):
-            return str(keys.get(name)).strip()
+        return str(keys.get(name) or "").strip()
     except Exception:
-        pass
-    return str(st.session_state.get(name + "_key", "") or st.session_state.get("key_" + name) or "").strip()
+        return ""
 
 
 PROVIDER_CATALOG = [

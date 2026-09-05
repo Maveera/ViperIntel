@@ -49,15 +49,11 @@ browser session only.
 ## API Key Configuration
 
 Add keys in the **sidebar → API Key Configuration**. Only add the feeds you
-need — pick a feed from the dropdown, type its key, and press **Enter**. Saved
-keys are always **masked** on the page (revealed only via the 👁 button) and
-stored encrypted locally (`config.json` + `.secret.key`, Fernet). Each saved
-key has a **👁 view** and **🗑 delete** button. For cloud, keys can also be
-[configured as Streamlit secrets](https://docs.streamlit.io/develop/concepts/connections/secrets-management)
-or environment variables with the names shown beside each feed — those take
-priority and are never written to disk:
-
-- `VIRUSTOTAL_API_KEY` · `ABUSEIPDB_API_KEY` · `ALIENVault_API_KEY` · `GREYNOISE_API_KEY` · `SHODAN_API_KEY` · `URLSCAN_API_KEY`
+need — pick a feed from the dropdown, type its key, and press **Enter**. Keys
+are **stored only in your browser** (localStorage) — nothing is written to the
+server, to the repository, or to code. Keys are always **masked** on the page
+(revealed only as the last 4 characters via the 👁 button). Each saved
+key has a **👁 view**, **✏️ edit**, and **🗑 delete** button.
 
 ## Risk Score Scale
 
@@ -83,21 +79,20 @@ streamlit run app.py
 
 1. Push this repository to GitHub.
 2. In Streamlit Cloud → **New app** → select repo & branch → Main file `app.py`.
-3. Add your API keys under Streamlit Cloud → **Settings → Secrets** using the
-   environment-variable names above (or enter them in the sidebar at runtime).
+3. Open the app and enter your API keys in the **sidebar** — they stay in your
+   own browser and never touch the server.
 
 ## Requirements
 
 ```
 streamlit>=1.32.0
+streamlit-javascript>=0.1.5
 pandas>=2.0.0
 requests>=2.31.0
-cryptography>=41.0.0
 ```
 
 ## Privacy
 
 Indicator lookups only ever go to the threat-intelligence feeds you configure —
 feeds without a key are never queried. API keys are never written to the
-repository or logs; they live in your session (or your private Streamlit
-secrets).
+repository, the server, or logs; they live in your browser's localStorage only.
