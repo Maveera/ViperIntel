@@ -82,6 +82,27 @@ streamlit run app.py
 3. Open the app and enter your API keys in the **sidebar** — they stay in your
    own browser and never touch the server.
 
+## Embed on another site (e.g. your Vercel page)
+
+Community Cloud apps can be embedded with the `?embed=true` query parameter:
+
+```html
+<iframe
+  src="https://<your-app>.streamlit.app/?embed=true"
+  height="900"
+  style="width:100%;border:none;"
+></iframe>
+```
+
+**Security binding**: this app only renders when embedded by an approved
+origin. The allowlist defaults to `https://inspira-center-command.vercel.app`
+and can be changed with the `VIPER_ALLOWED_EMBED_ORIGINS` environment variable
+(comma-separated). Any other site that tries to frame it sees a lockout message
+instead of the app. Opening the app directly (without embedding) always works.
+
+> Note: keep the embedded app public, and make sure the parent page is served
+> over HTTPS, or Safari may hide the frame due to third-party cookie blocking.
+
 ## Requirements
 
 ```

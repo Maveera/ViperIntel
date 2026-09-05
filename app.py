@@ -19,6 +19,7 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse as _urlparse
 
 import pandas as pd
 import streamlit as st
@@ -42,12 +43,77 @@ st.set_page_config(page_title="Viper Intel", layout="wide",
 APP_TAG = "v3.0 API scan"
 DATA_FILE = "viperintel_data.pkl"
 
+# Origins allowed to embed this app in an iframe (allowlist, not empty).
+# Override with the VIPER_ALLOWED_EMBED_ORIGINS env var (comma-separated) if needed.
+ALLOWED_EMBED_ORIGINS = tuple(
+    o.strip().rstrip("/")
+    for o in os.getenv(
+        "VIPER_ALLOWED_EMBED_ORIGINS",
+        "https://inspira-center-command.vercel.app",
+    ).split(",")
+    if o.strip()
+)
+
 try:
     from streamlit_javascript import st_javascript as _browser_js
 except Exception:
     _browser_js = None
 
 _BROWSER_KEY_STORE = "viperintel_api_keys"
+
+
+def _origin_of(value: str) -> str:
+    """Extract the scheme://host origin from a Referer/Origin header value."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    try:
+        parts = _urlparse(value)
+        if parts.scheme in ("http", "https") and parts.netloc:
+            return "{}://{}".format(parts.scheme, parts.netloc)
+    except Exception:
+        pass
+    return ""
+
+
+def check_embed_origin() -> None:
+    """Bind this app to the allowlisted origin(s) only.
+
+    Streamlit Community Cloud allows iframe embedding through the
+    "?embed=true" URL, but who may frame the app is not controlled by the
+    platform. Enforce the allowlist here from the request headers: when the
+    app runs in an embedded context and the referring origin is not approved,
+    refuse to render.
+    """
+    try:
+        embedded = bool(st.context.is_embedded)
+    except Exception:
+        return
+    if not embedded:
+        return
+    try:
+        hdrs = {str(k).lower(): str(v) for k, v in st.context.headers.items()}
+    except Exception:
+        hdrs = {}
+    referer = _origin_of(hdrs.get("referer", ""))
+    origin = _origin_of(hdrs.get("origin", ""))
+    own = _origin_of(getattr(st.context, "url", None) or "")
+    allowed = set(ALLOWED_EMBED_ORIGINS)
+    if own:
+        allowed.add(own)
+    if referer in allowed or origin in allowed:
+        return
+    if not referer and not origin:
+        return  # direct navigation of the embed URL - cannot determine a frame
+    st.markdown(
+        '<div style="padding:40px 24px;text-align:center;'
+        'border:1px solid #e5e7eb;border-radius:10px;color:#374151;">'
+        '<div style="font-size:34px;margin-bottom:10px;">&#128274;</div>'
+        '<b>Access restricted</b><br>This app may only be embedded on an '
+        'approved site. It is bound to '
+        '<b>{}</b>.</div>'.format(" · ".join(sorted(allowed))),
+        unsafe_allow_html=True)
+    st.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +357,9 @@ def render_sidebar() -> None:
             "Viper Intel correlates configurable TI feeds to produce an "
             "explainable **risk score (0-100)** and colour-coded verdict "
             "table for bulk IOC triage.\n\n"
-            "**Scores**: 0-21 Clean · 22-39 Low · 40-59 Suspicious · 60+ Malicious")
+            "**Scores**: 0-21 Clean · 22-39 Low · 40-59 Suspicious · 60+ Malicious\n\n"
+            "**Embedding**: bound to {}".format(
+                " · ".join(sorted(ALLOWED_EMBED_ORIGINS))))
 
 
 def _refresh_providers(provs: Dict[str, object]) -> Dict[str, object]:
@@ -938,6 +1006,7 @@ def render_footer() -> None:
 
 
 def main() -> None:
+    check_embed_origin()
     _init_state()
     render_sidebar()
 
