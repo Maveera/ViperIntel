@@ -799,6 +799,19 @@ def recommend_actions(detail: RiskScoreResult) -> List[str]:
 # Entry
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Footer
+# ---------------------------------------------------------------------------
+
+def render_footer() -> None:
+    year = _dt.datetime.now().year
+    st.markdown(
+        '<div style="margin-top:48px;padding-top:14px;border-top:1px solid #e5e7eb;'
+        'text-align:center;color:#6b7280;font-size:13px;">'
+        '\u00a9 {} All Rights Reserved | Maveera</div>'.format(year),
+        unsafe_allow_html=True)
+
+
 def main() -> None:
     _init_state()
     render_sidebar()
@@ -814,6 +827,8 @@ def main() -> None:
         render_bulk()
     with page[2]:
         render_investigate()
+
+    render_footer()
 
 
 if __name__ == "__main__":
