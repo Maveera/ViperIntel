@@ -477,7 +477,21 @@ def render_bulk() -> None:
         m3.metric("Suspicious", agg["suspicious"])
         m4.metric("Low", agg["low"])
         m5.metric("Clean", agg["clean"])
-        st.markdown(colored_table(rows), unsafe_allow_html=True)
+
+        c11, c22 = st.columns([1, 1], gap="large")
+        with c11:
+            st.markdown("**Colour-Coded Verdict Table**")
+            st.markdown(colored_table(rows), unsafe_allow_html=True)
+        with c22:
+            st.markdown("**Verdict Distribution Chart**")
+            render_verdict_chart(rows)
+            st.markdown("**Top-Risk Indicators**")
+            top = sorted(rows, key=lambda r: -r["score"])[:8]
+            st.dataframe(pd.DataFrame([{"Indicator": r["ioc"], "Type": r["type"],
+                                        "Score": r["score"], "Verdict": r["verdict"]}
+                                       for r in top]),
+                         hide_index=True, use_container_width=True)
+
         csv = verdict_df(rows).to_csv(index=False).encode()
         st.download_button("⬇ Download CSV", csv,
                            file_name="viperintel_results_{}.csv".format(
@@ -526,6 +540,48 @@ def render_investigate() -> None:
     render_single_result(row)
 
 
+def _provider_detail_text(p) -> str:
+    details = []
+    data = getattr(p, "data", {}) or {}
+    if p.provider == "VirusTotal":
+        if p.data.get("reputation") not in (None, 0):
+            details.append("reputation {}".format(p.data["reputation"]))
+        if p.data.get("as_owner"):
+            details.append(p.data["as_owner"])
+        if p.data.get("reinforcement") or p.data.get("tags"):
+            pass
+    elif p.provider == "AbuseIPDB":
+        details.append("{}% confidence".format(p.data.get("abuse_confidence_score", 0)))
+        if p.data.get("isp"):
+            details.append(p.data["isp"])
+    elif p.provider == "AlienVault OTX":
+        tags = p.data.get("tags", [])
+        if tags:
+            details.append(", ".join(tags[:4]))
+        if p.data.get("malware_families"):
+            details.append("families: " + ", ".join(p.data["malware_families"][:2]))
+    elif p.provider == "GreyNoise":
+        details.append(p.data.get("classification", "unknown"))
+    elif p.provider == "Shodan":
+        ports = p.data.get("ports", [])
+        if ports:
+            details.append("ports: " + ", ".join(map(str, ports[:6])))
+        if p.data.get("vulnerabilities"):
+            details.append(", ".join(p.data["vulnerabilities"][:2]))
+    elif p.provider == "NVD":
+        details.append("CVSS {}/{}".format(p.data.get("base_score", "?"),
+                                           p.data.get("severity", "")))
+    elif p.provider == "CISA KEV":
+        details.append("in KEV" if p.data.get("in_kev") else "not in KEV")
+    elif p.provider == "EPSS":
+        if p.data.get("epss_score") is not None:
+            details.append("epss {:.3f} (p{:.1f})".format(
+                p.data["epss_score"], (p.data.get("percentile", 0) or 0) * 100))
+    if p.mitre and not details:
+        details.append(", ".join(p.mitre))
+    return " | ".join(details) if details else "—"
+
+
 def render_single_result(r: Dict) -> None:
     detail: RiskScoreResult = r["detail"]
     st.markdown("## {}".format(r["ioc"]))
@@ -548,14 +604,38 @@ def render_single_result(r: Dict) -> None:
     for p in provs:
         if p.available:
             prov_rows.append([p.provider, VERDICT_HTML.get(p.verdict.upper(), "?"),
-                              p.detections, p.confidence,
-                              ", ".join(p.mitre) if p.mitre else "—"])
+                              p.risk_points, p.confidence,
+                              _provider_detail_text(p)])
         else:
             prov_rows.append([p.provider, "not available",
                               "—", "—", p.reason if p.reason else "no key/data"])
-    st.dataframe(pd.DataFrame(prov_rows, columns=["Feed", "Verdict", "Detections",
+    st.dataframe(pd.DataFrame(prov_rows, columns=["Feed", "Verdict", "Risk Pts",
                                                   "Confidence", "Details"]),
                  hide_index=True, use_container_width=True)
+
+    st.markdown("**Per-feed risk contribution**")
+    risk_df = pd.DataFrame([{"Feed": p.provider, "Risk Points": p.risk_points}
+                            for p in provs if p.available])
+    if not risk_df.empty:
+        st.bar_chart(risk_df.set_index("Feed"), horizontal=True)
+    else:
+        st.caption("No feed data returned.")
+
+    vt = next((p for p in provs if p.provider == "VirusTotal" and p.available), None)
+    if vt and vt.data:
+        d = vt.data
+        if d.get("total_engines"):
+            eng_df = pd.DataFrame([{
+                "Category": k.replace("_", " ").title(), "Engines": v}
+                for k, v in {"malicious": d.get("malicious", 0),
+                             "suspicious": d.get("suspicious", 0),
+                             "undetected": d.get("undetected", 0),
+                             "harmless": d.get("harmless", 0)}.items()
+                if v > 0])
+            if not eng_df.empty:
+                st.markdown("**VirusTotal engine analysis ({}/{} voted)**".format(
+                    d.get("malicious", 0) + d.get("suspicious", 0), d.get("total_engines", 0)))
+                st.bar_chart(eng_df.set_index("Category"), horizontal=True)
 
     st.subheader("Structured intelligence")
     st.json(_stripped_detail(detail))

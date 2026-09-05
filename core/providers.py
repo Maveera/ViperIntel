@@ -192,29 +192,56 @@ class VirusTotalProvider(TIProvider):
             res = self._get(self.base + endpoint, headers=headers)
             if "error" in res:
                 out["reason"] = res["error"]
-                out["available"] = "Rate limited" not in res["error"]
                 out["error"] = res["error"]
                 if "Not found" in res["error"] or "404" in res["error"]:
                     out["available"] = True
+                    out["verdict"] = "clean"
+                    out["data"] = {"message": "Not found in VirusTotal"}
                 return out
 
             attrs = res.get("data", {}).get("attributes", {})
             stats = attrs.get("last_analysis_stats", {})
             mal = stats.get("malicious", 0)
             susp = stats.get("suspicious", 0)
+            undet = stats.get("undetected", 0)
+            harmless = stats.get("harmless", 0)
             total = sum(stats.values())
+            reputation = attrs.get("reputation") or 0
+
+            # Verdict mirrors VirusTotal's own analysis: any malicious engine vote
+            # = malicious, otherwise suspicious votes / negative reputation.
+            if mal > 0:
+                verdict = "malicious"
+            elif susp > 0:
+                verdict = "suspicious"
+            elif reputation < -10:
+                verdict = "suspicious"
+            else:
+                verdict = "clean"
+
+            if mal > 0:
+                risk_points = min(100, 80 + mal * 3 + susp * 2)
+            elif susp > 0:
+                risk_points = min(100, 45 + susp * 3)
+            elif reputation < 0:
+                risk_points = min(50, 40 + int(abs(reputation) / 10))
+            else:
+                risk_points = 0
 
             out["available"] = True
             out["detections"] = mal
-            out["verdict"] = "malicious" if mal > 0 else "suspicious" if susp > 0 else "clean"
-            out["risk_points"] = min(100, mal * 8 + susp * 4)
-            out["confidence"] = 0.5 + 0.4 * min(1.0, (mal + susp) / max(total or 1, 1))
+            out["verdict"] = verdict
+            out["risk_points"] = risk_points
+            det_signal = mal + susp
+            out["confidence"] = 0.5 + 0.45 * min(1.0, det_signal / max(total or 1, 1))
             out["mitre"] = ["T1105"] if mal > 0 else (["T1105"] if susp > 0 else [])
             out["data"] = {
                 "malicious": mal,
                 "suspicious": susp,
+                "undetected": undet,
+                "harmless": harmless,
                 "total_engines": total,
-                "reputation": attrs.get("reputation", 0),
+                "reputation": reputation,
                 "country": attrs.get("country", ""),
                 "asn": attrs.get("asn", ""),
                 "as_owner": attrs.get("as_owner", ""),

@@ -29,6 +29,7 @@ class ProviderSummary:
     detections: int
     confidence: float
     mitre: List[str] = field(default_factory=list)
+    data: Dict = field(default_factory=dict)
 
 
 @dataclass
@@ -73,6 +74,9 @@ def classify(points: int):
     return "CLEAN", "Informational"
 
 
+_VERDICT_LEVEL = {"malicious": 3, "suspicious": 2, "clean": 1, "unknown": 0}
+
+
 def score_from_providers(value: str, provider_results: List[Dict],
                          ioc_type: Optional[str] = None) -> RiskScoreResult:
     value = value.strip()
@@ -88,6 +92,7 @@ def score_from_providers(value: str, provider_results: List[Dict],
     malicious_feeds = 0
     suspicious_feeds = 0
     detected_feeds = 0
+    max_verdict_level = 0
 
     for r in provider_results:
         summaries.append(ProviderSummary(
@@ -99,6 +104,7 @@ def score_from_providers(value: str, provider_results: List[Dict],
             detections=int(r.get("detections", 0)),
             confidence=float(r.get("confidence", 0.0)),
             mitre=list(r.get("mitre", [])),
+            data=r.get("data", {}) or {},
         ))
         mitre.extend(r.get("mitre", []))
 
@@ -106,6 +112,7 @@ def score_from_providers(value: str, provider_results: List[Dict],
             continue
         detected_feeds += 1
         verdict = r.get("verdict", "unknown")
+        max_verdict_level = max(max_verdict_level, _VERDICT_LEVEL.get(verdict, 0))
         if verdict == "malicious":
             malicious_feeds += 1
         elif verdict == "suspicious":
@@ -129,7 +136,7 @@ def score_from_providers(value: str, provider_results: List[Dict],
     else:
         base_score = len(factors) * 10
 
-    # Boost when multiple independent feeds agree on malicious
+    # Multi-feed agreement boosts
     if malicious_feeds >= 2:
         base_score += 5
     if malicious_feeds >= 3:
@@ -137,7 +144,15 @@ def score_from_providers(value: str, provider_results: List[Dict],
     if malicious_feeds > 0 and suspicious_feeds >= 2:
         base_score += 5
 
-    score = _bounded(base_score)
+    # Verdict floors: a feed explicitly calling an IOC malicious or suspicious
+    # must never be diluted into CLEAN/LOW by the confidence weighting.
+    if max_verdict_level >= 3:
+        floor = min(100, 80 + 5 * (malicious_feeds - 1))
+    elif max_verdict_level == 2:
+        floor = 40 + (5 if suspicious_feeds >= 2 else 0)
+    else:
+        floor = 0
+    score = _bounded(max(base_score, floor))
     verdict, severity = classify(score)
 
     if avail:
@@ -174,6 +189,10 @@ def _append_provider_factors(factors: List[RiskFactor], name: str, verdict: str,
             factors.append(RiskFactor(
                 "VirusTotal Suspicious", pts,
                 "Flagged suspicious by {} engines".format(data.get("suspicious", 0)), name))
+        elif data.get("reputation", 0) < -10:
+            factors.append(RiskFactor(
+                "VirusTotal Reputation", pts,
+                "Negative reputation {}".format(data.get("reputation", 0)), name))
     elif name == "AbuseIPDB":
         sc = data.get("abuse_confidence_score", 0)
         rep = data.get("total_reports", 0)
