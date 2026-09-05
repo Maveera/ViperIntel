@@ -146,13 +146,6 @@ def _encrypt_save(keys: Dict[str, str]) -> None:
         st.sidebar.error("Save failed: {}".format(e))
 
 
-def _mask_key(key: str) -> str:
-    key = str(key or "")
-    if not key:
-        return ""
-    return "•" * min(len(key), 24)
-
-
 def _load_config_silent() -> None:
     """Load saved (encrypted) keys once at startup; silently ignore problems."""
     try:
@@ -182,10 +175,6 @@ def render_sidebar() -> None:
         st.session_state["_cfg_loaded"] = True
 
     with st.sidebar.expander("🔑 API Key Configuration", expanded=True):
-        st.caption("Add **only the feeds you need**. Keys are saved encrypted "
-                   "and are always masked on screen → `config.json`. "
-                   "For cloud, the matching env var / Streamlit secret "
-                   "takes priority over any saved key.")
         keys = dict(st.session_state.get("api_keys", {}))
         configured = {p["id"] for p in PROVIDER_CATALOG
                       if p["needs_key"] and keys.get(p["id"])}
@@ -193,7 +182,7 @@ def render_sidebar() -> None:
                    if p["needs_key"] and p["id"] not in configured]
         if pending:
             sel = st.selectbox(
-                "Choose a feed to configure",
+                "Feed",
                 [p["id"] for p in pending],
                 format_func=lambda i: next(p["name"] for p in pending if p["id"] == i),
                 key="add_sel")
@@ -201,22 +190,16 @@ def render_sidebar() -> None:
         else:
             p_sel = None
         if p_sel is not None:
-            hint = os.getenv(p_sel["key_hint"], "") or keys.get(p_sel["id"], "")
             st.text_input(
                 p_sel["name"], type="password", key="add_inp_" + p_sel["id"],
-                value=hint, help="{} | {} | Press Enter to save".format(
-                    p_sel["key_hint"], p_sel["free"]),
+                placeholder="Enter {} key (press Enter to save)".format(p_sel["name"]),
+                help="{} | {}".format(p_sel["key_hint"], p_sel["free"]),
             )
             val = str(st.session_state.get("add_inp_" + p_sel["id"], "") or "").strip()
             if val:
                 keys[p_sel["id"]] = val
             else:
                 keys.pop(p_sel["id"], None)
-        elif pending:
-            st.caption("Select another feed above.")
-        else:
-            st.caption("All key-based feeds are already configured for this run. "
-                       "Use 🗑 in **💾 Saved API Keys** to remove one first.")
         st.session_state["api_keys"] = keys
 
         # auto-save on change (e.g. after pressing Enter)
@@ -224,37 +207,56 @@ def render_sidebar() -> None:
         if keys and kh != st.session_state.get("_keys_hash"):
             _encrypt_save(keys)
             st.session_state["_keys_hash"] = kh
-        if keys:
-            st.caption("🔐  {} key(s) saved & encrypted → `config.json`".format(len(keys)))
 
     with st.sidebar.expander("💾 Saved API Keys", expanded=True):
         saved = st.session_state.get("api_keys", {})
         if not saved:
-            st.caption("No keys saved yet. Add them above.")
+            st.caption("No keys saved.")
         for p in PROVIDER_CATALOG:
             if not p["needs_key"]:
                 continue
             key = saved.get(p["id"])
             if not key:
                 continue
-            reveal = st.session_state.get("reveal_" + p["id"], False)
-            c1, c2, c3, c4 = st.columns([2.1, 1.7, 0.6, 0.6])
+            reveal = st.session_state.get("ui_reveal_" + p["id"], False)
+            editing = st.session_state.get("ui_edit_" + p["id"], False)
+            c1, c2, c3, c4 = st.columns([1.4, 0.5, 0.5, 0.5])
             c1.markdown("**{}**".format(p["name"]))
-            c2.markdown("`{}`".format(key if reveal else _mask_key(key)),
-                        unsafe_allow_html=True)
-            if c3.button("👁", key="view_" + p["id"], help="Show / hide key"):
-                st.session_state["reveal_" + p["id"]] = not reveal
+            if c2.button("👁", key="view_" + p["id"], help="Show last 4 characters"):
+                st.session_state["ui_reveal_" + p["id"]] = not reveal
+                st.rerun()
+            if c3.button("✏️", key="edit_" + p["id"], help="Replace this key"):
+                st.session_state["ui_edit_" + p["id"]] = not editing
                 st.rerun()
             if c4.button("🗑", key="del_" + p["id"], help="Delete this key"):
-                remaining = dict(st.session_state.get("api_keys", {}))
+                remaining = dict(saved)
                 remaining.pop(p["id"], None)
                 st.session_state["api_keys"] = remaining
                 st.session_state["_keys_hash"] = None
                 st.session_state["providers"] = None
+                st.session_state.pop("ui_reveal_" + p["id"], None)
+                st.session_state.pop("ui_edit_" + p["id"], None)
                 _encrypt_save(remaining)
                 st.rerun()
+            if reveal:
+                st.caption("Key ends with **{}**".format(key[-4:]))
+            if editing:
+                st.text_input(
+                    "New {}".format(p["name"]), type="password",
+                    key="newkey_" + p["id"], placeholder="Enter new key",
+                )
+                nv = str(st.session_state.get("newkey_" + p["id"], "") or "").strip()
+                if nv:
+                    updated = dict(saved)
+                    updated[p["id"]] = nv
+                    st.session_state["api_keys"] = updated
+                    st.session_state["_keys_hash"] = None
+                    st.session_state["providers"] = None
+                    st.session_state["ui_edit_" + p["id"]] = False
+                    _encrypt_save(updated)
+                    st.rerun()
         if saved:
-            if st.button("🗑 Clear all saved keys", key="clear_keys"):
+            if st.button("🗑 Delete all keys", key="clear_keys"):
                 st.session_state["api_keys"] = {}
                 st.session_state["_keys_hash"] = None
                 st.session_state["providers"] = None
