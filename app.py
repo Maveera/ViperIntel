@@ -149,9 +149,9 @@ def _encrypt_save(keys: Dict[str, str]) -> None:
 
 def _mask_key(key: str) -> str:
     key = str(key or "")
-    if len(key) <= 8:
-        return "*" * len(key)
-    return key[:4] + "···" + key[-4:]
+    if not key:
+        return ""
+    return "•" * min(len(key), 24)
 
 
 def _load_config_silent() -> None:
@@ -183,31 +183,41 @@ def render_sidebar() -> None:
         st.session_state["_cfg_loaded"] = True
 
     with st.sidebar.expander("🔑 API Key Configuration", expanded=True):
-        st.caption("Type your threat-feed API keys and press **Enter** — they "
-                   "are saved & encrypted automatically → `config.json`. "
-                   "For cloud, set the matching env var / Streamlit secret "
-                   "instead (that takes priority).")
+        st.caption("Add **only the feeds you need**. Keys are saved encrypted "
+                   "and are always masked on screen → `config.json`. "
+                   "For cloud, the matching env var / Streamlit secret "
+                   "takes priority over any saved key.")
         keys = dict(st.session_state.get("api_keys", {}))
-        for p in PROVIDER_CATALOG:
-            if not p["needs_key"]:
-                continue
-            hint = os.getenv(p["key_hint"], "") or keys.get(p["id"], "")
+        configured = {p["id"] for p in PROVIDER_CATALOG
+                      if p["needs_key"] and keys.get(p["id"])}
+        pending = [p for p in PROVIDER_CATALOG
+                   if p["needs_key"] and p["id"] not in configured]
+        if pending:
+            sel = st.selectbox(
+                "Choose a feed to configure",
+                [p["id"] for p in pending],
+                format_func=lambda i: next(p["name"] for p in pending if p["id"] == i),
+                key="add_sel")
+            p_sel = next((p for p in pending if p["id"] == sel), None)
+        else:
+            p_sel = None
+        if p_sel is not None:
+            hint = os.getenv(p_sel["key_hint"], "") or keys.get(p_sel["id"], "")
             st.text_input(
-                p["name"], type="password", key="key_" + p["id"],
-                value=hint, help="{} | {}".format(p["key_hint"], p["free"]),
+                p_sel["name"], type="password", key="add_inp_" + p_sel["id"],
+                value=hint, help="{} | {} | Press Enter to save".format(
+                    p_sel["key_hint"], p_sel["free"]),
             )
-
-        # collect widget values (inline edit values win over the top input)
-        for p in PROVIDER_CATALOG:
-            if not p["needs_key"]:
-                continue
-            wid_val = str(st.session_state.get("key_" + p["id"], "") or "").strip()
-            inline_val = str(st.session_state.get("newkey_" + p["id"], "") or "").strip()
-            val = inline_val or wid_val
+            val = str(st.session_state.get("add_inp_" + p_sel["id"], "") or "").strip()
             if val:
-                keys[p["id"]] = val
+                keys[p_sel["id"]] = val
             else:
-                keys.pop(p["id"], None)
+                keys.pop(p_sel["id"], None)
+        elif pending:
+            st.caption("Select another feed above.")
+        else:
+            st.caption("All key-based feeds are already configured for this run. "
+                       "Use 🗑 in **💾 Saved API Keys** to remove one first.")
         st.session_state["api_keys"] = keys
 
         # auto-save on change (e.g. after pressing Enter)
@@ -221,7 +231,7 @@ def render_sidebar() -> None:
     with st.sidebar.expander("💾 Saved API Keys", expanded=True):
         saved = st.session_state.get("api_keys", {})
         if not saved:
-            st.caption("No keys yet. Enter them above and press Enter.")
+            st.caption("No keys saved yet. Add them above.")
         for p in PROVIDER_CATALOG:
             if not p["needs_key"]:
                 continue
@@ -229,22 +239,23 @@ def render_sidebar() -> None:
             if not key:
                 continue
             reveal = st.session_state.get("reveal_" + p["id"], False)
-            edit = st.session_state.get("edit_" + p["id"], False)
-            c1, c2, c3, c4 = st.columns([2.0, 1.8, 0.6, 0.6])
+            c1, c2, c3, c4 = st.columns([2.1, 1.7, 0.6, 0.6])
             c1.markdown("**{}**".format(p["name"]))
             c2.markdown("`{}`".format(key if reveal else _mask_key(key)),
                         unsafe_allow_html=True)
             if c3.button("👁", key="view_" + p["id"], help="Show / hide key"):
                 st.session_state["reveal_" + p["id"]] = not reveal
                 st.rerun()
-            if c4.button("✏️", key="edit_" + p["id"], help="Edit key"):
-                st.session_state["edit_" + p["id"]] = not edit
+            if c4.button("🗑", key="del_" + p["id"], help="Delete this key"):
+                remaining = dict(st.session_state.get("api_keys", {}))
+                remaining.pop(p["id"], None)
+                st.session_state["api_keys"] = remaining
+                st.session_state["_keys_hash"] = None
+                st.session_state["providers"] = None
+                _encrypt_save(remaining)
                 st.rerun()
-            if edit:
-                st.text_input("New {} key".format(p["name"]), value=key,
-                              key="newkey_" + p["id"], help="Press Enter to save")
         if saved:
-            if st.button("🗑 Clear saved keys", key="clear_keys"):
+            if st.button("🗑 Clear all saved keys", key="clear_keys"):
                 st.session_state["api_keys"] = {}
                 st.session_state["_keys_hash"] = None
                 st.session_state["providers"] = None

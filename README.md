@@ -50,15 +50,16 @@ browser session only.
 
 ## API Key Configuration
 
-Add keys in the **sidebar → API Key Configuration**. Keys are kept in the
-session only; they can also be
+Add keys in the **sidebar → API Key Configuration**. Only add the feeds you
+need — pick a feed from the dropdown, type its key, and press **Enter**. Saved
+keys are always **masked** on the page (revealed only via the 👁 button) and
+stored encrypted locally (`config.json` + `.secret.key`, Fernet). Each saved
+key has a **👁 view** and **🗑 delete** button. For cloud, keys can also be
 [configured as Streamlit secrets](https://docs.streamlit.io/develop/concepts/connections/secrets-management)
-or environment variables with the names shown beside each feed:
+or environment variables with the names shown beside each feed — those take
+priority and are never written to disk:
 
 - `VIRUSTOTAL_API_KEY` · `ABUSEIPDB_API_KEY` · `ALIENVault_API_KEY` · `GREYNOISE_API_KEY` · `SHODAN_API_KEY` · `URLSCAN_API_KEY` · `NVD_API_KEY`
-
-"💾 Save config" stores keys encrypted locally (`config.json` + `.secret.key`,
-Fernet). Add `config.json` and `.secret.key` to `.gitignore` (already done).
 
 ## Risk Score Scale
 
