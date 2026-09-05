@@ -895,9 +895,38 @@ def recommend_actions(detail: RiskScoreResult) -> List[str]:
 def render_footer() -> None:
     year = _dt.datetime.now().year
     st.markdown(
-        '<div style="margin-top:48px;padding-top:14px;border-top:1px solid #e5e7eb;'
-        'text-align:center;color:#6b7280;font-size:13px;">'
-        '\u00a9 {} All Rights Reserved | Maveera</div>'.format(year),
+        """
+        <style>
+          .block-container { padding-bottom: 80px; }
+          #viper-footer {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            width: 100%;
+            text-align: center;
+            padding: 12px 0;
+            border-top: 1px solid rgba(128, 128, 128, 0.25);
+            color: #6b7280;
+            font-size: 13px;
+            background: var(--background-color);
+            z-index: 999;
+          }
+          #viper-footer a {
+            color: #6b7280;
+            text-decoration: none;
+          }
+          #viper-footer a:hover {
+            color: #4b5563;
+            text-decoration: none;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True)
+    st.markdown(
+        '<div id="viper-footer">\u00a9 {} All Rights Reserved | '
+        '<a href="https://maveera.tech" target="_blank" '
+        'rel="noopener noreferrer">Maveera</a></div>'.format(year),
         unsafe_allow_html=True)
 
 
