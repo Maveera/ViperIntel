@@ -39,12 +39,13 @@ unavailable and **never crashes the scan**.
 | View | Description |
 |------|-------------|
 | **Dashboard** | Session metrics, verdict distribution chart, critical findings, full dataset table. |
-| **Bulk Analysis** | Upload CSV/TXT or paste IOCs; threaded multi-feed scan; **colour-coded verdict table** (red/orange/yellow/green), risk-score bars, confidence, feed/signal counts, CSV export, per-IOC drill-down. |
+| **Bulk Analysis** | Upload CSV/TXT or paste IOCs; threaded multi-feed scan; **colour-coded verdict table** (red/orange/yellow/green), risk-score bars, confidence, feed/signal counts, per-IOC drill-down, **CSV / JSON export**, **Refresh Data** and **Reset Data** controls. |
 | **Investigate** | Single-IOC deep dive: per-feed evidence, structured intel JSON, risk-factor breakdown, MITRE ATT&CK, SOC recommendations. |
 
 No accounts, logins, or databases are needed — provide your TI-feed API keys in
-the sidebar and the app is fully operational. Everything else lives in the
-browser session only.
+the sidebar and the app is fully operational. Scanned results are automatically
+remembered for the session and restored after a refresh (`viperintel_data.pkl`
+snapshot, git-ignored); the API keys themselves live only in the browser.
 
 ## API Key Configuration
 
@@ -99,6 +100,7 @@ origin. The allowlist defaults to `https://inspira-center-command.vercel.app`
 and can be changed with the `VIPER_ALLOWED_EMBED_ORIGINS` environment variable
 (comma-separated). Any other site that tries to frame it sees a lockout message
 instead of the app. Opening the app directly (without embedding) always works.
+`VIPER_ALLOWED_EMBED_ORIGINS` is the app's only optional environment variable.
 
 > Note: keep the embedded app public, and make sure the parent page is served
 > over HTTPS, or Safari may hide the frame due to third-party cookie blocking.
