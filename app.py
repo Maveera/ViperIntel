@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
+import pickle
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -40,6 +41,7 @@ st.set_page_config(page_title="Viper Intel", layout="wide",
                    page_icon="🐍", initial_sidebar_state="expanded")
 
 APP_TAG = "v3.0 API scan"
+DATA_FILE = "viperintel_data.pkl"
 
 
 # ---------------------------------------------------------------------------
@@ -52,11 +54,45 @@ def _s(key: str, default=None):
     return st.session_state[key]
 
 
+def _snapshot_save() -> None:
+    try:
+        with open(DATA_FILE, "wb") as f:
+            pickle.dump({
+                "rows": st.session_state.get("bulk_results", []),
+                "source": st.session_state.get("bulk_source", ""),
+            }, f, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception:
+        pass
+
+
+def _snapshot_load() -> None:
+    try:
+        if os.path.exists(DATA_FILE) and not st.session_state.get("bulk_results"):
+            with open(DATA_FILE, "rb") as f:
+                snap = pickle.load(f)
+            st.session_state["bulk_results"] = snap.get("rows", [])
+            st.session_state["bulk_source"] = snap.get("source", "")
+    except Exception:
+        pass  # corrupt/old snapshot is ignored
+
+
+def _snapshot_clear() -> None:
+    st.session_state["bulk_results"] = []
+    st.session_state["bulk_source"] = ""
+    st.session_state["bulk_items"] = []
+    try:
+        os.remove(DATA_FILE)
+    except OSError:
+        pass
+
+
 def _init_state() -> None:
     _s("api_keys", {})
     _s("providers", None)
     _s("bulk_results", [])
     _s("bulk_source", None)
+    _s("bulk_items", [])
+    _snapshot_load()
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +475,40 @@ def verdict_df(rows: List[Dict]) -> pd.DataFrame:
     ])
 
 
+def _rows_to_json(rows: List[Dict]) -> str:
+    def detail(d):
+        return {
+            "score": d.score,
+            "verdict": d.verdict,
+            "severity": d.severity,
+            "confidence": d.confidence,
+            "entropy": d.entropy,
+            "mitre_techniques": d.mitre_techniques,
+            "explanation": d.explanation,
+            "factors": [{"name": f.name, "points": f.points, "reason": f.reason,
+                         "source": f.source} for f in d.factors],
+            "providers": [
+                {"provider": p.provider, "available": p.available, "reason": p.reason,
+                 "verdict": p.verdict, "risk_points": p.risk_points,
+                 "detections": p.detections, "confidence": p.confidence,
+                 "mitre": p.mitre, "data": p.data}
+                for p in d.providers
+            ],
+        }
+
+    out = []
+    for r in rows:
+        row = {k: v for k, v in r.items() if k != "detail"}
+        row["detail"] = detail(r["detail"])
+        out.append(row)
+    return json.dumps({
+        "app": APP_TAG,
+        "exported_at": _dt.datetime.now().isoformat(),
+        "count": len(rows),
+        "results": out,
+    }, indent=2, default=str)
+
+
 VERDICT_PALETTE = {
     "MALICIOUS": "#b91c1c",
     "SUSPICIOUS": "#ea580c",
@@ -508,23 +578,19 @@ def render_verdict_donut(rows: List[Dict]) -> None:
 # Pages
 # ---------------------------------------------------------------------------
 
-def render_dashboard(rows: List[Dict], source: str) -> None:
-    col1, col2, col3, col4 = st.columns(4)
-    st.markdown("### 📊 Dashboard")
-    if not rows:
-        st.info("Run a scan first, or upload IOCs on the **Bulk Analysis** tab.")
-        return
+def render_common_results(rows: List[Dict]) -> None:
+    """Dashboard content shared by the Dashboard tab and the Bulk Analysis results."""
     agg = aggregate_bulk_scores([{"ioc": r["ioc"], "verdict": r["verdict"]} for r in rows])
-    m1 = col1.metric("Total Indicators", agg["total"])
-    m2 = col1.metric("Malicious", agg["malicious"])
-    m3 = col2.metric("Suspicious", agg["suspicious"])
-    m4 = col2.metric("Low", agg["low"])
-    m5 = col3.metric("Clean", agg["clean"])
-    m6 = col3.metric("Avg. Score", round(sum(r["score"] for r in rows) / max(len(rows), 1), 1)
-                     if rows else 0)
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Indicators", agg["total"])
+    col1.metric("Malicious", agg["malicious"])
+    col2.metric("Suspicious", agg["suspicious"])
+    col2.metric("Low", agg["low"])
+    col3.metric("Clean", agg["clean"])
+    col3.metric("Avg. Score", round(sum(r["score"] for r in rows) / max(len(rows), 1), 1))
     col4.metric("Feeds Hit", sum(r["feed_hits"] for r in rows))
-    avg = sum(r["confidence"] for r in rows) / max(len(rows), 1)
-    col4.metric("Avg. Confidence", "{:.0%}".format(avg))
+    col4.metric("Avg. Confidence", "{:.0%}".format(
+        sum(r["confidence"] for r in rows) / max(len(rows), 1)))
 
     st.markdown("### Verdict Distribution")
     render_verdict_donut(rows)
@@ -538,6 +604,14 @@ def render_dashboard(rows: List[Dict], source: str) -> None:
 
     st.markdown("### Full Dataset")
     st.dataframe(verdict_df(rows), hide_index=True, use_container_width=True)
+
+
+def render_dashboard(rows: List[Dict], source: str) -> None:
+    st.markdown("### 📊 Dashboard")
+    if not rows:
+        st.info("Run a scan first, or upload IOCs on the **Bulk Analysis** tab.")
+        return
+    render_common_results(rows)
 
 
 def render_bulk() -> None:
@@ -568,39 +642,56 @@ def render_bulk() -> None:
         with st.spinner("Scanning {} indicator(s) across configured TI feeds…".format(len(items))):
             rows = scan_bulk(items)
         st.session_state["bulk_results"] = rows
+        st.session_state["bulk_items"] = items
         st.session_state["bulk_source"] = source_name(uploaded, paste)
         st.session_state["scan_time"] = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _snapshot_save()
+        st.rerun()
 
     rows = st.session_state.get("bulk_results") or []
     if rows:
         src = st.session_state.get("bulk_source", "")
         st.markdown("### Results — {}".format(src))
-        agg = aggregate_bulk_scores([{"ioc": r["ioc"], "verdict": r["verdict"]} for r in rows])
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Total", agg["total"])
-        m2.metric("Malicious", agg["malicious"])
-        m3.metric("Suspicious", agg["suspicious"])
-        m4.metric("Low", agg["low"])
-        m5.metric("Clean", agg["clean"])
 
-        st.markdown("### Verdict Distribution")
-        render_verdict_donut(rows)
+        btn1, btn2, btn3, btn4, btn5 = st.columns(5)
+        with btn1:
+            refresh = st.button("🔄 Refresh Data", key="bulk_refresh", use_container_width=True)
+        with btn2:
+            reset = st.button("♻️ Reset Data", key="bulk_reset", use_container_width=True)
+        with btn3:
+            st.download_button(
+                "💾 Save All (JSON)", data=_rows_to_json(rows).encode(),
+                file_name="viperintel_full_{}.json".format(
+                    _dt.datetime.now().strftime("%Y%m%d_%H%M%S")),
+                mime="application/json", use_container_width=True, key="bulk_save_json")
+        with btn4:
+            csv = verdict_df(rows).to_csv(index=False).encode()
+            st.download_button("⬇ Download CSV", csv,
+                               file_name="viperintel_results_{}.csv".format(
+                                   _dt.datetime.now().strftime("%Y%m%d_%H%M%S")),
+                               mime="text/csv", use_container_width=True, key="bulk_dl_csv")
+        with btn5:
+            st.markdown("")
+        if reset:
+            _snapshot_clear()
+            st.rerun()
+        if refresh:
+            items = st.session_state.get("bulk_items") or []
+            if items:
+                with st.spinner("Re-scanning {} indicator(s)…".format(len(items))):
+                    refreshed = scan_bulk(items)
+                st.session_state["bulk_results"] = refreshed
+                st.session_state["scan_time"] = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                _snapshot_save()
+                st.rerun()
+            else:
+                st.info("No previous scan to refresh — run a scan first.")
 
-        st.markdown("### Details")
+        # Dashboard-style summary (same content as the Dashboard tab)
+        render_common_results(rows)
+
+        st.markdown("### All Indicators — Details")
         st.markdown(colored_table(rows), unsafe_allow_html=True)
-
-        with st.expander("📊 Top-Risk Indicators"):
-            top = sorted(rows, key=lambda r: -r["score"])[:8]
-            st.dataframe(pd.DataFrame([{"Indicator": r["ioc"], "Type": r["type"],
-                                        "Score": r["score"], "Verdict": r["verdict"]}
-                                       for r in top]),
-                         hide_index=True, use_container_width=True)
-
-        csv = verdict_df(rows).to_csv(index=False).encode()
-        st.download_button("⬇ Download CSV", csv,
-                           file_name="viperintel_results_{}.csv".format(
-                               _dt.datetime.now().strftime("%Y%m%d_%H%M%S")),
-                           mime="text/csv")
 
     st.divider()
     st.markdown("**Per-indicator drill-down**")
