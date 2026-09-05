@@ -3,7 +3,7 @@ Viper Intel - SOC Threat Intelligence Scanner
 
 Bulk IP / Hash / Domain / URL / CVE analysis against configurable
 threat-intelligence feeds (VirusTotal, AbuseIPDB, AlienVault OTX,
-GreyNoise, Shodan, URLScan.io, NVD, CISA KEV, EPSS).
+GreyNoise, Shodan, URLScan.io). Only feeds with an API key are queried.
 
 No hardcoded secrets. API keys are supplied via the sidebar at runtime,
 or via Streamlit secrets / environment variables for deployments.
@@ -34,7 +34,6 @@ from core.risk_engine import (
     RiskScoreResult,
     aggregate_bulk_scores,
     score_from_providers,
-    score_offline_only,
 )
 
 st.set_page_config(page_title="Viper Intel", layout="wide",
@@ -272,12 +271,9 @@ def render_sidebar() -> None:
         rows = []
         for p in PROVIDER_CATALOG:
             prov = provs[p["id"]]
-            if not prov.needs_key:
-                rows.append([prov.name, "Always on", ", ".join(prov.types)])
-            else:
-                configured = prov.is_configured()
-                rows.append([prov.name, "✓ configured" if configured else "— key missing",
-                             ", ".join(prov.types)])
+            configured = prov.is_configured()
+            rows.append([prov.name, "✓ configured" if configured else "— key missing",
+                         ", ".join(prov.types)])
         st.dataframe(pd.DataFrame(rows, columns=["Feed", "Status", "Supports"]),
                      hide_index=True, height=260)
 
@@ -350,8 +346,7 @@ def _suggest_type_specific(value: str, guessed: Optional[str]) -> Optional[str]:
 # Scanning
 # ---------------------------------------------------------------------------
 
-def scan_single(value: str, ioc_type: Optional[str], provs: Dict[str, object],
-                use_offline: bool = True) -> Optional[Dict]:
+def scan_single(value: str, ioc_type: Optional[str], provs: Dict[str, object]) -> Optional[Dict]:
     value = value.strip()
     t = _suggest_type_specific(value, _resolve_type(value, ioc_type))
     if not t:
@@ -366,11 +361,10 @@ def scan_single(value: str, ioc_type: Optional[str], provs: Dict[str, object],
         for prov in configured:
             results.append(prov.lookup(t, value))
         r = score_from_providers(value, results, ioc_type=t)
-    elif use_offline:
-        r = score_offline_only(value, ioc_type=t)
     else:
-        r = RiskScoreResult(score=0, verdict="UNKNOWN", severity="?", factors=[],
-                            explanation=["No TI feed configured for type {}.".format(t)])
+        r = RiskScoreResult(
+            score=0, verdict="UNKNOWN", severity="?", factors=[],
+            explanation=["No API key configured for type {} — add a key in the sidebar.".format(t)])
         r.providers = []
 
     hits = [p for p in r.providers if p.available and p.verdict in ("malicious", "suspicious")]
@@ -640,7 +634,7 @@ def render_bulk() -> None:
         st.session_state["providers"] = provs
         rows_preview = []
         for pid, p in provs.items():
-            rows_preview.append([p.name, "✓" if p.is_configured() or not p.needs_key else "—"])
+            rows_preview.append([p.name, "✓ configured" if p.is_configured() else "— key missing"])
         st.dataframe(pd.DataFrame(rows_preview, columns=["Feed", "Ready"]),
                      hide_index=True, use_container_width=True, height=220)
 
@@ -774,15 +768,6 @@ def _provider_detail_text(p) -> str:
             details.append("ports: " + ", ".join(map(str, ports[:6])))
         if p.data.get("vulnerabilities"):
             details.append(", ".join(p.data["vulnerabilities"][:2]))
-    elif p.provider == "NVD":
-        details.append("CVSS {}/{}".format(p.data.get("base_score", "?"),
-                                           p.data.get("severity", "")))
-    elif p.provider == "CISA KEV":
-        details.append("in KEV" if p.data.get("in_kev") else "not in KEV")
-    elif p.provider == "EPSS":
-        if p.data.get("epss_score") is not None:
-            details.append("epss {:.3f} (p{:.1f})".format(
-                p.data["epss_score"], (p.data.get("percentile", 0) or 0) * 100))
     if p.mitre and not details:
         details.append(", ".join(p.mitre))
     return " | ".join(details) if details else "—"

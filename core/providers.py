@@ -1,6 +1,5 @@
 import base64
-import time
-from typing import Dict, Any, List, Optional
+from typing import Dict, List
 
 import requests
 
@@ -17,7 +16,6 @@ def get_api_key(name: str) -> str:
         "greynoise": "GREYNOISE_API_KEY",
         "shodan": "SHODAN_API_KEY",
         "urlscan": "URLSCAN_API_KEY",
-        "nvd": "NVD_API_KEY",
     }
     env_name = env_keys.get(name)
     if env_name and os.getenv(env_name):
@@ -25,6 +23,12 @@ def get_api_key(name: str) -> str:
     try:
         if env_name and st.secrets.get(env_name):
             return str(st.secrets.get(env_name)).strip()
+    except Exception:
+        pass
+    try:
+        keys = st.session_state.get("api_keys", {})
+        if keys.get(name):
+            return str(keys.get(name)).strip()
     except Exception:
         pass
     return str(st.session_state.get(name + "_key", "") or st.session_state.get("key_" + name) or "").strip()
@@ -78,30 +82,6 @@ PROVIDER_CATALOG = [
         "needs_key": True,
         "key_hint": "URLSCAN_API_KEY",
         "free": "50 req/min with API key",
-    },
-    {
-        "id": "nvd",
-        "name": "NVD",
-        "types": ["cve"],
-        "needs_key": False,
-        "key_hint": "NVD_API_KEY (optional)",
-        "free": "Free, no key required",
-    },
-    {
-        "id": "cisa_kev",
-        "name": "CISA KEV",
-        "types": ["cve"],
-        "needs_key": False,
-        "key_hint": "-",
-        "free": "Free public feed",
-    },
-    {
-        "id": "epss",
-        "name": "EPSS",
-        "types": ["cve"],
-        "needs_key": False,
-        "key_hint": "-",
-        "free": "Free public feed",
     },
 ]
 
@@ -554,144 +534,6 @@ class URLScanProvider(TIProvider):
         return out
 
 
-class NVDProvider(TIProvider):
-    id = "nvd"
-    name = "NVD"
-    types = ["cve"]
-    needs_key = False
-    base = "https://services.nvd.nist.gov/rest/json/cves/2.0"
-
-    def lookup(self, ioc_type: str, value: str) -> Dict:
-        out = self._base_result(ioc_type, value)
-        try:
-            headers = {"apiKey": self.key} if self.key else {}
-            res = self._get(self.base, headers=headers, params={"cveId": value})
-            if "error" in res:
-                out["reason"] = res["error"]
-                out["error"] = res["error"]
-                return out
-
-            vulns = res.get("vulnerabilities", [])
-            if not vulns:
-                out["available"] = True
-                out["verdict"] = "clean"
-                out["data"] = {"message": "CVE not found in NVD"}
-                return out
-
-            cve = vulns[0].get("cve", {})
-            metrics = cve.get("metrics", {})
-            cvss = (metrics.get("cvssMetricV31") or metrics.get("cvssMetricV30")
-                    or metrics.get("cvssMetricV2") or [{}])[0].get("cvssData", {})
-            base_score = cvss.get("baseScore", 0) or 0
-            severity = cvss.get("baseSeverity", "NONE")
-            desc = next((d["value"] for d in cve.get("descriptions", [])
-                         if d.get("lang") == "en"), "")
-            refs = [r["url"] for r in cve.get("references", [])[:5]]
-
-            out["available"] = True
-            out["risk_points"] = min(100, int(round(base_score * 10)))
-            out["verdict"] = ("malicious" if base_score >= 9.0 else
-                              "suspicious" if base_score >= 7.0 else
-                              "suspicious" if base_score >= 4.0 else "clean")
-            out["confidence"] = 0.9
-            out["mitre"] = ["T1190"] if base_score >= 7.0 else []
-            out["data"] = {
-                "base_score": base_score,
-                "severity": severity,
-                "description": desc[:280],
-                "published": cve.get("published", ""),
-                "last_modified": cve.get("lastModified", ""),
-                "references": refs,
-            }
-        except Exception as e:
-            out["reason"] = "Error"
-            out["error"] = str(e)[:120]
-        return out
-
-
-class CISAKEVProvider(TIProvider):
-    id = "cisa_kev"
-    name = "CISA KEV"
-    types = ["cve"]
-    needs_key = False
-    base = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
-
-    def __init__(self, timeout: int = 12):
-        super().__init__(timeout)
-        self._data: Optional[Dict] = None
-        self._fetched = 0.0
-
-    def lookup(self, ioc_type: str, value: str) -> Dict:
-        out = self._base_result(ioc_type, value)
-        try:
-            if self._data is None or time.time() - self._fetched > 3600:
-                feed = self._get(self.base)
-                if "error" in feed:
-                    out["reason"] = feed["error"]
-                    out["error"] = feed["error"]
-                    return out
-                self._data = feed
-                self._fetched = time.time()
-
-            for vuln in self._data.get("vulnerabilities", []):
-                if vuln.get("cveID", "").upper() == value.upper():
-                    d = {k: vuln.get(k) for k in
-                         ("cveID", "vendorProject", "product", "vulnerabilityName",
-                          "dateAdded", "shortDescription", "requiredAction", "dueDate")}
-                    out["available"] = True
-                    out["verdict"] = "malicious"
-                    out["risk_points"] = 100
-                    out["confidence"] = 1.0
-                    out["mitre"] = ["T1190"]
-                    out["detections"] = 1
-                    out["data"] = {"in_kev": True, **d}
-                    return out
-
-            out["available"] = True
-            out["verdict"] = "clean"
-            out["confidence"] = 0.9
-            out["data"] = {"in_kev": False}
-        except Exception as e:
-            out["reason"] = "Error"
-            out["error"] = str(e)[:120]
-        return out
-
-
-class EPSSProvider(TIProvider):
-    id = "epss"
-    name = "EPSS"
-    types = ["cve"]
-    needs_key = False
-    base = "https://api.first.org/data/v1/epss"
-
-    def lookup(self, ioc_type: str, value: str) -> Dict:
-        out = self._base_result(ioc_type, value)
-        try:
-            res = self._get(self.base, params={"cve": value})
-            if "error" in res:
-                out["reason"] = res["error"]
-                out["error"] = res["error"]
-                return out
-            entries = res.get("data", [])
-            if not entries:
-                out["available"] = True
-                out["data"] = {"message": "No EPSS data found"}
-                return out
-            e = entries[0]
-            score = float(e.get("epss", 0))
-            pct = float(e.get("percentile", 0))
-            out["available"] = True
-            out["risk_points"] = min(100, int(round(score * 100)))
-            out["verdict"] = ("malicious" if score >= 0.9 else
-                              "suspicious" if score >= 0.5 else "clean")
-            out["confidence"] = 0.8
-            out["data"] = {"epss_score": score, "percentile": pct, "date": e.get("date", "")}
-        except Exception as e:
-            out["reason"] = "Error"
-            out["error"] = str(e)[:120]
-        return out
-
-
 def build_providers() -> Dict[str, TIProvider]:
     providers = {
         "virustotal": VirusTotalProvider(),
@@ -700,9 +542,6 @@ def build_providers() -> Dict[str, TIProvider]:
         "greynoise": GreyNoiseProvider(),
         "shodan": ShodanProvider(),
         "urlscan": URLScanProvider(),
-        "nvd": NVDProvider(),
-        "cisa_kev": CISAKEVProvider(),
-        "epss": EPSSProvider(),
     }
     for pid, p in providers.items():
         p.key = get_api_key(pid)
@@ -715,4 +554,4 @@ def providers_for_type(providers: Dict[str, TIProvider], ioc_type: str) -> List[
 
 def configured_providers_for_type(providers: Dict[str, TIProvider], ioc_type: str) -> List[TIProvider]:
     return [p for p in providers.values()
-            if p.supports(ioc_type) and (p.is_configured() or not p.needs_key)]
+            if p.supports(ioc_type) and p.is_configured()]

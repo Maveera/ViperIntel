@@ -2,13 +2,7 @@ from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 
 from core.detector import detect_ioc_type
-from core.offline_intel import (
-    calculate_shannon_entropy,
-    get_tld,
-    HIGH_RISK_TLDS,
-    SUSPICIOUS_TLDS,
-    ip_entropy_signal,
-)
+from core.offline_intel import calculate_shannon_entropy
 
 
 @dataclass
@@ -128,9 +122,6 @@ def score_from_providers(value: str, provider_results: List[Dict],
         data = r.get("data", {})
         _append_provider_factors(factors, name, verdict, pts, data)
 
-    # Supplement with offline heuristics (entropy / TLD / known ranges)
-    _append_heuristic_factors(value, ioc_type, factors, mitre)
-
     if weight_total > 0 and detected_feeds > 0:
         base_score = int(weighted_sum / weight_total)
     else:
@@ -237,50 +228,6 @@ def _append_provider_factors(factors: List[RiskFactor], name: str, verdict: str,
             factors.append(RiskFactor(
                 "URLScan Detections", min(pts, 100),
                 "{} scans found for indicator".format(n), name))
-    elif name == "NVD":
-        if data.get("base_score"):
-            factors.append(RiskFactor(
-                "NVD CVSS", min(pts, 100),
-                "CVSS {}/10 ({})".format(data["base_score"], data.get("severity", "")), name))
-    elif name == "CISA KEV":
-        if data.get("in_kev"):
-            factors.append(RiskFactor(
-                "CISA KEV", pts,
-                "{} actively exploited (added {})".format(
-                    data.get("cveID", ""), data.get("dateAdded", "")), name))
-
-
-def _append_heuristic_factors(value: str, ioc_type: str,
-                              factors: List[RiskFactor], mitre: List[str]) -> None:
-    if ioc_type in ("domain", "url", "hostname"):
-        tld = get_tld(value)
-        entropy = calculate_shannon_entropy(value)
-        if tld in HIGH_RISK_TLDS:
-            factors.append(RiskFactor("High-Risk TLD", 35,
-                                       "High-risk TLD (.{}): commonly used for phishing/DGA".format(tld)))
-            mitre.append("T1071.001")
-        elif tld in SUSPICIOUS_TLDS:
-            factors.append(RiskFactor("Suspicious TLD", 15,
-                                       "Suspicious TLD (.{}).".format(tld)))
-            mitre.append("T1071.001")
-        if entropy >= 4.3:
-            factors.append(RiskFactor("DGA Entropy", 25,
-                                       "High Shannon entropy ({:.2f}) suggests algorithmically generated name".format(entropy)))
-            mitre.append("T1071.001")
-    elif ioc_type in ("sha256", "sha1", "md5"):
-        entropy = calculate_shannon_entropy(value)
-        factors.append(RiskFactor("Hash Verified", 0,
-                                   "Hash format validated ({} chars, entropy {:.2f}).".format(
-                                       len(value), entropy)))
-    elif ioc_type in ("ipv4", "ipv6"):
-        ent, high = ip_entropy_signal(value, ioc_type)
-        if high:
-            factors.append(RiskFactor("High Entropy IPv4", 10,
-                                       "Unusual numeric entropy in IP octets.".format(ent)))
-        if value.startswith(("185.", "45.", "5.", "94.")):
-            factors.append(RiskFactor("Known Abuse Range", 15,
-                                       "Leading octet {} is disproportionately reported for abuse.".format(
-                                           value.split(".")[0])))
 
 
 def _build_explanation(score: int, verdict: str,
@@ -299,40 +246,6 @@ def _build_explanation(score: int, verdict: str,
     else:
         lines.append("Signals detected from {} feed(s).".format(feeds))
     return lines
-
-
-def score_offline_only(value: str, ioc_type: Optional[str] = None) -> RiskScoreResult:
-    """Fallback scoring when no API keys are configured: use heuristics + CVE catalog."""
-    from core.offline_intel import lookup_cve
-
-    factors: List[RiskFactor] = []
-    mitre: List[str] = []
-    value = value.strip()
-    if not ioc_type:
-        ioc_type = detect_ioc_type(value) or "unknown"
-
-    if ioc_type == "cve":
-        known = lookup_cve(value)
-        if known:
-            factors.append(RiskFactor(
-                "CISA KEV Cataloged", min(100, int(known["base_score"] * 10)),
-                "{} is a known exploited vulnerability: {}".format(value, known["name"])))
-            mitre.extend(known.get("mitre", []))
-    else:
-        _append_heuristic_factors(value, ioc_type, factors, mitre)
-
-    score = _bounded(sum(f.points for f in factors))
-    verdict, severity = classify(score)
-    return RiskScoreResult(
-        score=score,
-        verdict=verdict,
-        severity=severity,
-        factors=factors,
-        explanation=[f.reason for f in factors] if factors else ["No configured feeds; offline heuristics only."],
-        mitre_techniques=list(dict.fromkeys([t for t in mitre if t.startswith("T")])),
-        entropy=calculate_shannon_entropy(value),
-        confidence=0.5,
-    )
 
 
 def aggregate_bulk_scores(rows: List[Dict]) -> Dict:

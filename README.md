@@ -29,11 +29,9 @@ Bulk IOC Upload / Paste → Auto-Detect Type → Query Configured TI Feeds (thre
 | GreyNoise | IP | required | noise / riot / classification |
 | Shodan | IP | required | open ports + exposed CVEs |
 | URLScan.io | IP · domain · URL | required | scan history |
-| NVD | CVE | optional | CVSS base score + description |
-| CISA KEV | CVE | none | known-exploited flag |
-| EPSS | CVE | none | exploitation probability percentile |
 
-Feeds degrade gracefully: a missing key or failed request marks the feed as
+Only feeds for which an API key is configured are queried — there are no
+"always-on" free feeds, and a missing key or failed request marks the feed as
 unavailable and **never crashes the scan**.
 
 ## Features
@@ -59,7 +57,7 @@ key has a **👁 view** and **🗑 delete** button. For cloud, keys can also be
 or environment variables with the names shown beside each feed — those take
 priority and are never written to disk:
 
-- `VIRUSTOTAL_API_KEY` · `ABUSEIPDB_API_KEY` · `ALIENVault_API_KEY` · `GREYNOISE_API_KEY` · `SHODAN_API_KEY` · `URLSCAN_API_KEY` · `NVD_API_KEY`
+- `VIRUSTOTAL_API_KEY` · `ABUSEIPDB_API_KEY` · `ALIENVault_API_KEY` · `GREYNOISE_API_KEY` · `SHODAN_API_KEY` · `URLSCAN_API_KEY`
 
 ## Risk Score Scale
 
@@ -71,7 +69,7 @@ priority and are never written to disk:
 | 60–79 | MALICIOUS | High |
 | 80–100| MALICIOUS | Critical |
 
-Scores are explainable with concrete factors, e.g. `+85 CISA KEV Cataloged`,
+Scores are explainable with concrete factors, e.g.
 `+60 VirusTotal Detections`, `+40 AbuseIPDB Score`.
 
 ## Quick Start (Local)
@@ -93,14 +91,13 @@ streamlit run app.py
 ```
 streamlit>=1.32.0
 pandas>=2.0.0
-pydeck>=0.8.0
 requests>=2.31.0
 cryptography>=41.0.0
 ```
 
 ## Privacy
 
-Indicator lookups only ever go to the threat-intelligence feeds you configure.
-API keys are never written to the repository or logs; they live in your session
-(or your private Streamlit secrets). Local analysis uses in-memory heuristics
-(entropy / TLD / known CVE catalog) to supplement feed hits.
+Indicator lookups only ever go to the threat-intelligence feeds you configure —
+feeds without a key are never queried. API keys are never written to the
+repository or logs; they live in your session (or your private Streamlit
+secrets).

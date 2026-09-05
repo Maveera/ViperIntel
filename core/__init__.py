@@ -13,7 +13,6 @@ from core.risk_engine import (
     aggregate_bulk_scores,
     classify,
     score_from_providers,
-    score_offline_only,
 )
 
 __all__ = [
@@ -30,5 +29,4 @@ __all__ = [
     "aggregate_bulk_scores",
     "classify",
     "score_from_providers",
-    "score_offline_only",
 ]
