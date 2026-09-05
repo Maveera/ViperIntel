@@ -448,7 +448,7 @@ VERDICT_PALETTE = {
 
 
 def render_verdict_donut(rows: List[Dict]) -> None:
-    """Donut chart (pure CSS, no extra dependency): verdict distribution."""
+    """Verdict distribution: donut chart (CSS) with the bar chart on the right."""
     counts = {v: 0 for v in VERDICT_PALETTE}
     for r in rows:
         verdict = r.get("verdict", "UNKNOWN")
@@ -460,32 +460,48 @@ def render_verdict_donut(rows: List[Dict]) -> None:
         return
 
     active = [v for v in VERDICT_PALETTE if counts[v] > 0]
-    acc = 0.0
-    segs = []
-    for v in active:
-        pct = counts[v] / total * 100
-        segs.append("{} {}% {}%".format(VERDICT_PALETTE[v], round(acc, 2), round(acc + pct, 2)))
-        acc += pct
-    gradient = ", ".join(segs)
+    col_donut, col_bar = st.columns([1, 1], gap="large")
 
-    html = ['<div style="display:flex;gap:32px;align-items:center;flex-wrap:wrap;">']
-    html.append(
-        '<div style="width:170px;height:170px;border-radius:50%;'
-        'background:conic-gradient({});position:relative;">'
-        '<div style="width:108px;height:108px;border-radius:50%;background:#fff;'
-        'position:absolute;top:31px;left:31px;'
-        'display:flex;align-items:center;justify-content:center;'
-        'font-weight:700;font-size:20px;color:#111827;">{}</div>'
-        '</div>'.format(gradient, total))
-    html.append('<div>')
-    for v in active:
+    with col_donut:
+        st.markdown("**Donut — verdict share**")
+        acc = 0.0
+        segs = []
+        for v in active:
+            pct = counts[v] / total * 100
+            segs.append("{} {}% {}%".format(VERDICT_PALETTE[v], round(acc, 2),
+                                            round(acc + pct, 2)))
+            acc += pct
+        gradient = ", ".join(segs)
+
+        html = ['<div style="display:flex;gap:28px;align-items:center;flex-wrap:wrap;">']
         html.append(
-            '<div style="display:flex;align-items:center;gap:10px;margin:6px 0;">'
-            '<span style="width:14px;height:14px;border-radius:3px;background:{};"></span>'
-            '<span style="color:#111827;">{} &nbsp; {} ({:.0f}%)</span>'
-            '</div>'.format(VERDICT_PALETTE[v], v, counts[v], counts[v] / total * 100))
-    html.append('</div></div>')
-    st.markdown("".join(html), unsafe_allow_html=True)
+            '<div style="width:170px;height:170px;border-radius:50%;'
+            'background:conic-gradient({});position:relative;">'
+            '<div style="width:108px;height:108px;border-radius:50%;background:#fff;'
+            'position:absolute;top:31px;left:31px;'
+            'display:flex;align-items:center;justify-content:center;'
+            'font-weight:700;font-size:20px;color:#111827;">{}</div>'
+            '</div>'.format(gradient, total))
+        html.append('<div>')
+        for v in active:
+            html.append(
+                '<div style="display:flex;align-items:center;gap:10px;margin:6px 0;">'
+                '<span style="width:14px;height:14px;border-radius:3px;background:{};"></span>'
+                '<span style="color:#111827;">{} &nbsp; {} ({:.0f}%)</span>'
+                '</div>'.format(VERDICT_PALETTE[v], v, counts[v], counts[v] / total * 100))
+        html.append('</div></div>')
+        st.markdown("".join(html), unsafe_allow_html=True)
+
+    with col_bar:
+        st.markdown("**Bar — verdict comparison**")
+        chart = pd.DataFrame({
+            "verdict": active,
+            "count": [counts[v] for v in active],
+            "color": [VERDICT_PALETTE[v] for v in active],
+        })
+        if not chart.empty:
+            st.bar_chart(chart, x="verdict", y="count", color="color", stack=False,
+                         height=280)
 
 
 # ---------------------------------------------------------------------------
