@@ -111,54 +111,113 @@ def _encrypt_save(keys: Dict[str, str]) -> None:
         st.sidebar.error("Save failed: {}".format(e))
 
 
-def _decrypt_load() -> None:
+def _mask_key(key: str) -> str:
+    key = str(key or "")
+    if len(key) <= 8:
+        return "*" * len(key)
+    return key[:4] + "···" + key[-4:]
+
+
+def _load_config_silent() -> None:
+    """Load saved (encrypted) keys once at startup; silently ignore problems."""
     try:
-        from cryptography.fernet import Fernet, InvalidToken
+        from cryptography.fernet import Fernet
         if not (os.path.exists("config.json") and os.path.exists(".secret.key")):
-            st.sidebar.info("No saved config found.")
             return
         with open(".secret.key", "rb") as f:
             fkey = Fernet(f.read())
         with open("config.json", "rb") as f:
             payload = fkey.decrypt(f.read())
-        keys = json.loads(payload.decode())
-        cur = dict(_s("api_keys", {}))
-        cur.update(keys)
+        stored = json.loads(payload.decode())
+        cur = dict(st.session_state.get("api_keys", {}))
+        cur.update({k: v for k, v in stored.items() if v})
         st.session_state["api_keys"] = cur
-        st.session_state["providers"] = None  # force rebuild
-        st.sidebar.success("API keys loaded from config.json")
-    except InvalidToken:
-        st.sidebar.error("config.json is corrupted or key mismatch")
-    except Exception as e:
-        st.sidebar.error("Load failed: {}".format(e))
+        st.session_state["_keys_hash"] = hash(frozenset(cur.items()))
+    except Exception:
+        pass  # corrupt / missing config is handled by re-entering keys
 
 
 def render_sidebar() -> None:
     st.sidebar.header("🐍 Viper Intel")
     st.sidebar.caption(APP_TAG + " | " + est.strftime("%Y-%m-%d %H:%M"))
 
+    # restore saved keys once per session
+    if not st.session_state.get("_cfg_loaded"):
+        _load_config_silent()
+        st.session_state["_cfg_loaded"] = True
+
     with st.sidebar.expander("🔑 API Key Configuration", expanded=True):
-        st.caption("Enter your threat-feed API keys. Keys are kept in-session "
-                   "(never committed). For cloud deployments, set the matching "
-                   "environment variable / Streamlit secret instead.")
-        keys = dict(_s("api_keys", {}))
+        st.caption("Type your threat-feed API keys and press **Enter** — they "
+                   "are saved & encrypted automatically → `config.json`. "
+                   "For cloud, set the matching env var / Streamlit secret "
+                   "instead (that takes priority).")
+        keys = dict(st.session_state.get("api_keys", {}))
         for p in PROVIDER_CATALOG:
             if not p["needs_key"]:
                 continue
-            val = keys.get(p["id"], "")
-            hint = os.getenv(p["key_hint"], "") or val
-            new_val = st.text_input(
+            hint = os.getenv(p["key_hint"], "") or keys.get(p["id"], "")
+            st.text_input(
                 p["name"], type="password", key="key_" + p["id"],
                 value=hint, help="{} | {}".format(p["key_hint"], p["free"]),
             )
-            if new_val:
-                keys[p["id"]] = new_val.strip()
+
+        # collect widget values (inline edit values win over the top input)
+        for p in PROVIDER_CATALOG:
+            if not p["needs_key"]:
+                continue
+            wid_val = str(st.session_state.get("key_" + p["id"], "") or "").strip()
+            inline_val = str(st.session_state.get("newkey_" + p["id"], "") or "").strip()
+            val = inline_val or wid_val
+            if val:
+                keys[p["id"]] = val
+            else:
+                keys.pop(p["id"], None)
         st.session_state["api_keys"] = keys
-        c1, c2 = st.columns(2)
-        if c1.button("💾 Save config"):
+
+        # auto-save on change (e.g. after pressing Enter)
+        kh = hash(frozenset(keys.items()))
+        if keys and kh != st.session_state.get("_keys_hash"):
             _encrypt_save(keys)
-        if c2.button("📂 Load config"):
-            _decrypt_load()
+            st.session_state["_keys_hash"] = kh
+        if keys:
+            st.caption("🔐  {} key(s) saved & encrypted → `config.json`".format(len(keys)))
+
+    with st.sidebar.expander("💾 Saved API Keys", expanded=True):
+        saved = st.session_state.get("api_keys", {})
+        if not saved:
+            st.caption("No keys yet. Enter them above and press Enter.")
+        for p in PROVIDER_CATALOG:
+            if not p["needs_key"]:
+                continue
+            key = saved.get(p["id"])
+            if not key:
+                continue
+            reveal = st.session_state.get("reveal_" + p["id"], False)
+            edit = st.session_state.get("edit_" + p["id"], False)
+            c1, c2, c3, c4 = st.columns([2.0, 1.8, 0.6, 0.6])
+            c1.markdown("**{}**".format(p["name"]))
+            c2.markdown("`{}`".format(key if reveal else _mask_key(key)),
+                        unsafe_allow_html=True)
+            if c3.button("👁", key="view_" + p["id"], help="Show / hide key"):
+                st.session_state["reveal_" + p["id"]] = not reveal
+                st.rerun()
+            if c4.button("✏️", key="edit_" + p["id"], help="Edit key"):
+                st.session_state["edit_" + p["id"]] = not edit
+                st.rerun()
+            if edit:
+                st.text_input("New {} key".format(p["name"]), value=key,
+                              key="newkey_" + p["id"], help="Press Enter to save")
+        if saved:
+            if st.button("🗑 Clear saved keys", key="clear_keys"):
+                st.session_state["api_keys"] = {}
+                st.session_state["_keys_hash"] = None
+                st.session_state["providers"] = None
+                try:
+                    os.remove("config.json")
+                    os.remove(".secret.key")
+                except OSError:
+                    pass
+                st.rerun()
 
     with st.sidebar.expander("🛰 TI Feeds Active", expanded=False):
         provs = st.session_state.get("providers") or build_providers()
@@ -380,23 +439,53 @@ def verdict_df(rows: List[Dict]) -> pd.DataFrame:
     ])
 
 
-def render_verdict_chart(rows: List[Dict]) -> None:
-    import pandas as pd
-    df = pd.DataFrame([
-        {"Verdict": r["verdict"], "Count": 1} for r in rows
-    ])
-    if df.empty:
-        st.info("No results to chart.")
+VERDICT_PALETTE = {
+    "MALICIOUS": "#b91c1c",
+    "SUSPICIOUS": "#ea580c",
+    "LOW": "#facc15",
+    "CLEAN": "#16a34a",
+}
+
+
+def render_verdict_donut(rows: List[Dict]) -> None:
+    """Donut chart (pure CSS, no extra dependency): verdict distribution."""
+    counts = {v: 0 for v in VERDICT_PALETTE}
+    for r in rows:
+        verdict = r.get("verdict", "UNKNOWN")
+        if verdict in counts:
+            counts[verdict] += 1
+    total = sum(counts.values())
+    if total == 0:
+        st.caption("No results to chart.")
         return
-    vc = df.groupby("Verdict")["Count"].count().reindex(
-        ["MALICIOUS", "SUSPICIOUS", "LOW", "CLEAN"], fill_value=0)
-    colors = {"MALICIOUS": "#b91c1c", "SUSPICIOUS": "#ea580c",
-              "LOW": "#facc15", "CLEAN": "#16a34a"}
-    chart = pd.DataFrame(
-        {"verdict": vc.index, "count": vc.values,
-         "color": [colors[v] for v in vc.index]})
-    st.bar_chart(chart, x="verdict", y="count", color="color",
-                 stack=False)
+
+    active = [v for v in VERDICT_PALETTE if counts[v] > 0]
+    acc = 0.0
+    segs = []
+    for v in active:
+        pct = counts[v] / total * 100
+        segs.append("{} {}% {}%".format(VERDICT_PALETTE[v], round(acc, 2), round(acc + pct, 2)))
+        acc += pct
+    gradient = ", ".join(segs)
+
+    html = ['<div style="display:flex;gap:32px;align-items:center;flex-wrap:wrap;">']
+    html.append(
+        '<div style="width:170px;height:170px;border-radius:50%;'
+        'background:conic-gradient({});position:relative;">'
+        '<div style="width:108px;height:108px;border-radius:50%;background:#fff;'
+        'position:absolute;top:31px;left:31px;'
+        'display:flex;align-items:center;justify-content:center;'
+        'font-weight:700;font-size:20px;color:#111827;">{}</div>'
+        '</div>'.format(gradient, total))
+    html.append('<div>')
+    for v in active:
+        html.append(
+            '<div style="display:flex;align-items:center;gap:10px;margin:6px 0;">'
+            '<span style="width:14px;height:14px;border-radius:3px;background:{};"></span>'
+            '<span style="color:#111827;">{} &nbsp; {} ({:.0f}%)</span>'
+            '</div>'.format(VERDICT_PALETTE[v], v, counts[v], counts[v] / total * 100))
+    html.append('</div></div>')
+    st.markdown("".join(html), unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -421,17 +510,17 @@ def render_dashboard(rows: List[Dict], source: str) -> None:
     avg = sum(r["confidence"] for r in rows) / max(len(rows), 1)
     col4.metric("Avg. Confidence", "{:.0%}".format(avg))
 
-    st.subheader("Verdict Distribution")
-    render_verdict_chart(rows)
+    st.markdown("### Verdict Distribution")
+    render_verdict_donut(rows)
 
-    st.subheader("Critical Findings (top 10)")
+    st.markdown("### Critical Findings (top 10)")
     crit = [r for r in rows if r["verdict"] in ("MALICIOUS", "SUSPICIOUS")][:10]
     if crit:
         st.markdown(colored_table(crit), unsafe_allow_html=True)
     else:
         st.success("No malicious findings in the current dataset.")
 
-    st.subheader("Full Dataset")
+    st.markdown("### Full Dataset")
     st.dataframe(verdict_df(rows), hide_index=True, use_container_width=True)
 
 
@@ -478,14 +567,13 @@ def render_bulk() -> None:
         m4.metric("Low", agg["low"])
         m5.metric("Clean", agg["clean"])
 
-        c11, c22 = st.columns([1, 1], gap="large")
-        with c11:
-            st.markdown("**Colour-Coded Verdict Table**")
-            st.markdown(colored_table(rows), unsafe_allow_html=True)
-        with c22:
-            st.markdown("**Verdict Distribution Chart**")
-            render_verdict_chart(rows)
-            st.markdown("**Top-Risk Indicators**")
+        st.markdown("### Verdict Distribution")
+        render_verdict_donut(rows)
+
+        st.markdown("### Details")
+        st.markdown(colored_table(rows), unsafe_allow_html=True)
+
+        with st.expander("📊 Top-Risk Indicators"):
             top = sorted(rows, key=lambda r: -r["score"])[:8]
             st.dataframe(pd.DataFrame([{"Indicator": r["ioc"], "Type": r["type"],
                                         "Score": r["score"], "Verdict": r["verdict"]}
@@ -600,6 +688,35 @@ def render_single_result(r: Dict) -> None:
         st.info("No TI feeds were run. Configure API keys in the sidebar to scan "
                 "this indicator type against live feeds.")
         return
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown("**Per-feed risk contribution**")
+        risk_df = pd.DataFrame([{"Feed": p.provider, "Risk Points": p.risk_points}
+                                for p in provs if p.available])
+        if not risk_df.empty:
+            st.bar_chart(risk_df.set_index("Feed"))
+        else:
+            st.caption("No feed data returned.")
+    with col_b:
+        vt = next((p for p in provs if p.provider == "VirusTotal" and p.available), None)
+        if vt and vt.data and vt.data.get("total_engines"):
+            d = vt.data
+            eng_df = pd.DataFrame([{
+                "Category": k.replace("_", " ").title(), "Engines": v}
+                for k, v in {"malicious": d.get("malicious", 0),
+                             "suspicious": d.get("suspicious", 0),
+                             "undetected": d.get("undetected", 0),
+                             "harmless": d.get("harmless", 0)}.items()
+                if v > 0])
+            if not eng_df.empty:
+                st.markdown("**VirusTotal engine analysis ({}/{} voted)**".format(
+                    d.get("malicious", 0) + d.get("suspicious", 0), d.get("total_engines", 0)))
+                st.bar_chart(eng_df.set_index("Category"))
+        else:
+            st.caption("VirusTotal engine data not available.")
+
+    st.markdown("**Feed details**")
     prov_rows = []
     for p in provs:
         if p.available:
@@ -612,30 +729,6 @@ def render_single_result(r: Dict) -> None:
     st.dataframe(pd.DataFrame(prov_rows, columns=["Feed", "Verdict", "Risk Pts",
                                                   "Confidence", "Details"]),
                  hide_index=True, use_container_width=True)
-
-    st.markdown("**Per-feed risk contribution**")
-    risk_df = pd.DataFrame([{"Feed": p.provider, "Risk Points": p.risk_points}
-                            for p in provs if p.available])
-    if not risk_df.empty:
-        st.bar_chart(risk_df.set_index("Feed"), horizontal=True)
-    else:
-        st.caption("No feed data returned.")
-
-    vt = next((p for p in provs if p.provider == "VirusTotal" and p.available), None)
-    if vt and vt.data:
-        d = vt.data
-        if d.get("total_engines"):
-            eng_df = pd.DataFrame([{
-                "Category": k.replace("_", " ").title(), "Engines": v}
-                for k, v in {"malicious": d.get("malicious", 0),
-                             "suspicious": d.get("suspicious", 0),
-                             "undetected": d.get("undetected", 0),
-                             "harmless": d.get("harmless", 0)}.items()
-                if v > 0])
-            if not eng_df.empty:
-                st.markdown("**VirusTotal engine analysis ({}/{} voted)**".format(
-                    d.get("malicious", 0) + d.get("suspicious", 0), d.get("total_engines", 0)))
-                st.bar_chart(eng_df.set_index("Category"), horizontal=True)
 
     st.subheader("Structured intelligence")
     st.json(_stripped_detail(detail))
