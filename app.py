@@ -20,7 +20,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
-import pydeck as pdk
 import streamlit as st
 
 from core.detector import detect_ioc_type, parse_bulk_file, validate_ioc
@@ -54,13 +53,10 @@ def _s(key: str, default=None):
 
 
 def _init_state() -> None:
-    _s("history", [])
-    _s("watchlist", [])
     _s("api_keys", {})
     _s("providers", None)
     _s("bulk_results", [])
     _s("bulk_source", None)
-    _s("map_df", None)
 
 
 # ---------------------------------------------------------------------------
@@ -264,15 +260,12 @@ def scan_single(value: str, ioc_type: Optional[str], provs: Dict[str, object],
         for prov in configured:
             results.append(prov.lookup(t, value))
         r = score_from_providers(value, results, ioc_type=t)
-        country = _country_from_results(results)
     elif use_offline:
         r = score_offline_only(value, ioc_type=t)
-        country = ""
     else:
         r = RiskScoreResult(score=0, verdict="UNKNOWN", severity="?", factors=[],
                             explanation=["No TI feed configured for type {}.".format(t)])
         r.providers = []
-        country = ""
 
     hits = [p for p in r.providers if p.available and p.verdict in ("malicious", "suspicious")]
     feeds_checked = len(r.providers)
@@ -290,18 +283,7 @@ def scan_single(value: str, ioc_type: Optional[str], provs: Dict[str, object],
         "factors": [f.name for f in r.factors if f.points > 0],
         "mitre": r.mitre_techniques,
         "detail": r,
-        "country": country,
     }
-
-
-def _country_from_results(results: List[Dict]) -> str:
-    for r in results:
-        data = r.get("data", {}) or {}
-        cc = (data.get("country") or data.get("country_code") or "").upper()
-        cc = cc.split("-")[-1] if cc and "-" in cc else cc
-        if cc and len(cc) == 2:
-            return cc
-    return ""
 
 
 def _summarize(r: RiskScoreResult) -> str:
@@ -541,23 +523,7 @@ def render_investigate() -> None:
         st.error("Unrecognised IOC format. Supported: IPv4/IPv6, domain, URL, "
                  "MD5/SHA-1/SHA-256 hash, CVE identifier.")
         return
-    hist = st.session_state.get("history", [])
-    hist.append({"ts": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                 "ioc": row["ioc"], "type": row["type"], "verdict": row["verdict"],
-                 "score": row["score"]})
-    st.session_state["history"] = hist[-200:]
     render_single_result(row)
-    st.divider()
-    st.markdown("#### Watchlist")
-    if st.button("➕ Add to Watchlist", key="inv_add_wl"):
-        wl = st.session_state.get("watchlist", [])
-        if row["ioc"] not in [w["ioc"] for w in wl]:
-            wl.append({"ioc": row["ioc"], "type": row["type"], "verdict": row["verdict"],
-                       "score": row["score"]})
-            st.session_state["watchlist"] = wl
-            st.success("Added to watchlist")
-        else:
-            st.info("Already in watchlist")
 
 
 def render_single_result(r: Dict) -> None:
@@ -640,76 +606,6 @@ def recommend_actions(detail: RiskScoreResult) -> List[str]:
     return out
 
 
-def render_map(rows: List[Dict]) -> None:
-    from core.geo import country_coords
-    st.markdown("### 🗺 Threat Map")
-    st.caption("Geolocation from the IP feeds when available (AbuseIPDB / OTX / Shodan). "
-               "No external geo IP service is used.")
-    if not rows:
-        st.info("Run a bulk scan first to populate the threat map.")
-        return
-    indexed = [(r, i) for i, r in enumerate(rows)]
-    pts = []
-    for r, _ in indexed:
-        country = r.get("country", "").upper()
-        coords = country_coords.get(country)
-        if not coords:
-            continue
-        lat, lon = coords
-        color = "#b91c1c" if r["score"] >= 80 else "#ea580c" if r["score"] >= 40 else "#16a34a"
-        pts.append({"lat": lat, "lon": lon, "name": r["ioc"], "score": r["score"],
-                    "color": color, "verdict": r["verdict"], "country": country})
-    if not pts:
-        st.warning("No geo-located indicators in results (IP-feeds returned no country). "
-                   "Run an IP scan with AbuseIPDB/Shodan/OTX keys for map points.")
-        return
-
-    df = pd.DataFrame(pts)
-    layer = pdk.Layer(
-        "ScatterplotLayer",
-        data=df,
-        get_position="[lon, lat]",
-        get_fill_color="[color]",
-        get_radius=25000,
-        pickable=True,
-    )
-    view = pdk.ViewState(latitude=df["lat"].mean(), longitude=df["lon"].mean(), zoom=1)
-    r = pdk.Deck(layers=[layer], initial_view_state=view,
-                 tooltip={"text": "{name}  ·  {verdict}  ·  score {score}"})
-    st.pydeck_chart(r)
-    with st.expander("Geo points (CSV)"):
-        st.dataframe(df, hide_index=True)
-
-
-def render_watchlist() -> None:
-    st.markdown("### ⭐ Watchlist")
-    wl = st.session_state.get("watchlist", [])
-    if not wl:
-        st.info("Watchlisted indicators will appear here. Use the Investigate tab to add one.")
-        return
-    for i, w in enumerate(wl):
-        c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
-        c1.markdown("`{}`  · {}  · {}".format(w["ioc"], w["type"], VERDICT_HTML.get(w["verdict"], "")))
-        c3.markdown("**Score {}**".format(w["score"]))
-        if c4.button("Remove", key="wl_rm_{}".format(i)):
-            wl.pop(i)
-            st.session_state["watchlist"] = wl
-            st.rerun()
-
-
-def render_history() -> None:
-    st.markdown("### 🕐 Investigation History")
-    hist = st.session_state.get("history", [])
-    if not hist:
-        st.info("Previous investigations will appear here.")
-        return
-    df = pd.DataFrame(hist)
-    st.dataframe(df, hide_index=True, use_container_width=True)
-    if st.button("Clear history"):
-        st.session_state["history"] = []
-        st.rerun()
-
-
 # ---------------------------------------------------------------------------
 # Entry
 # ---------------------------------------------------------------------------
@@ -718,8 +614,7 @@ def main() -> None:
     _init_state()
     render_sidebar()
 
-    tabs = ["📊 Dashboard", "🚀 Bulk Analysis", "🔍 Investigate",
-            "🗺 Threat Map", "⭐ Watchlist", "🕐 History"]
+    tabs = ["📊 Dashboard", "🚀 Bulk Analysis", "🔍 Investigate"]
     page = st.tabs(tabs)
     rows = st.session_state.get("bulk_results") or []
     source = st.session_state.get("bulk_source", "")
@@ -730,12 +625,6 @@ def main() -> None:
         render_bulk()
     with page[2]:
         render_investigate()
-    with page[3]:
-        render_map(rows)
-    with page[4]:
-        render_watchlist()
-    with page[5]:
-        render_history()
 
 
 if __name__ == "__main__":

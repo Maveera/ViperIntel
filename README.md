@@ -43,9 +43,10 @@ unavailable and **never crashes the scan**.
 | **Dashboard** | Session metrics, verdict distribution chart, critical findings, full dataset table. |
 | **Bulk Analysis** | Upload CSV/TXT or paste IOCs; threaded multi-feed scan; **colour-coded verdict table** (red/orange/yellow/green), risk-score bars, confidence, feed/signal counts, CSV export, per-IOC drill-down. |
 | **Investigate** | Single-IOC deep dive: per-feed evidence, structured intel JSON, risk-factor breakdown, MITRE ATT&CK, SOC recommendations. |
-| **Threat Map** | PyDeck scatter of geo-located indicators (country from IP feeds). |
-| **Watchlist** | In-memory tracking of indicators under monitoring. |
-| **Investigation History** | Every investigation performed in the current session. |
+
+No accounts, logins, or databases are needed — provide your TI-feed API keys in
+the sidebar and the app is fully operational. Everything else lives in the
+browser session only.
 
 ## API Key Configuration
 
